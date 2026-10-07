@@ -35,8 +35,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.visionguard.VisionGuardApp
-import com.visionguard.policy.ProximityEstimator
-import com.visionguard.policy.ProximityState
+import com.visionguard.policy.ProtectionPolicy
+import com.visionguard.policy.ProtectionState
 import com.visionguard.vision.CameraForegroundService
 
 class MainActivity : ComponentActivity() {
@@ -132,6 +132,7 @@ fun SpikeHomeScreen() {
             !metrics.isServiceRunning -> MaterialTheme.colorScheme.surfaceVariant
             metrics.isPaused -> MaterialTheme.colorScheme.tertiaryContainer
             metrics.isTooClose -> MaterialTheme.colorScheme.errorContainer
+            metrics.isNoFaceDimmed -> MaterialTheme.colorScheme.secondaryContainer
             else -> MaterialTheme.colorScheme.primaryContainer
         }
 
@@ -146,6 +147,7 @@ fun SpikeHomeScreen() {
                         !metrics.isServiceRunning -> "Protection Stopped"
                         metrics.isPaused -> "Protection Paused"
                         metrics.isTooClose -> "Too Close! (< 20 cm)"
+                        metrics.isNoFaceDimmed -> "No Face (>5s) - Screen Dimmed"
                         metrics.isPowerSaving -> "Protection Active (Power Saving)"
                         else -> "Protection Active"
                     },
@@ -157,6 +159,7 @@ fun SpikeHomeScreen() {
                     text = when {
                         !metrics.isServiceRunning -> "Tap Start to launch camera background monitor."
                         metrics.isPaused -> "Protection paused via notification or app. Proximity dimming is inactive."
+                        metrics.isNoFaceDimmed -> "No face seen for >5s. Screen dimmed and frame analysis throttled to 1 fps."
                         metrics.isPowerSaving -> "No face seen for >5s. Frame analysis throttled to 1 fps to save battery."
                         metrics.isCameraBound -> "Camera active. Monitoring face distance (~20 cm threshold)."
                         else -> "Camera paused (screen off or background gating)."
@@ -239,8 +242,8 @@ fun SpikeHomeScreen() {
                 val widthFractionStr = if (metrics.faceCount > 0) {
                     "%.3f (trigger: %.2f, recover: %.2f)".format(
                         metrics.widthFraction,
-                        ProximityEstimator.DEFAULT_TRIGGER_THRESHOLD_FRACTION,
-                        ProximityEstimator.DEFAULT_RECOVERY_THRESHOLD_FRACTION
+                        ProtectionPolicy.DEFAULT_TRIGGER_THRESHOLD_FRACTION,
+                        ProtectionPolicy.DEFAULT_RECOVERY_THRESHOLD_FRACTION
                     )
                 } else {
                     "0.000 (No face)"
@@ -248,22 +251,23 @@ fun SpikeHomeScreen() {
                 MetricRow(label = "Width Fraction", value = widthFractionStr)
 
                 val distanceEst = if (metrics.faceCount > 0) {
-                    val d = ProximityEstimator.estimateDistanceCm(metrics.widthFraction)
+                    val d = metrics.estimatedDistanceCm ?: ProtectionPolicy.estimateDistanceCm(metrics.widthFraction)
                     if (d != null) "~%.0f cm (approximate)".format(d) else "Unknown"
                 } else {
                     "None (no face in view)"
                 }
                 MetricRow(label = "Est. Distance", value = distanceEst)
 
-                val stateLabel = when (metrics.proximityState) {
-                    ProximityState.NO_FACE_DETECTED -> "NO FACE DETECTED"
-                    ProximityState.NORMAL_DISTANCE -> "NORMAL DISTANCE"
-                    ProximityState.TOO_CLOSE -> "TOO CLOSE (≤ 20 cm)"
+                val stateLabel = when (metrics.protectionState) {
+                    ProtectionState.NORMAL_DISTANCE -> "NORMAL DISTANCE"
+                    ProtectionState.TOO_CLOSE -> "TOO CLOSE (≤ 20 cm)"
+                    ProtectionState.NO_FACE_GRACE_PERIOD -> "NO FACE DETECTED (Grace Period)"
+                    ProtectionState.NO_FACE_DIMMED -> "NO FACE DETECTED (Dimmed / 1 fps)"
                 }
                 MetricRow(
-                    label = "Proximity State",
+                    label = "Protection State",
                     value = stateLabel,
-                    highlight = metrics.proximityState == ProximityState.TOO_CLOSE
+                    highlight = metrics.isTooClose || metrics.isNoFaceDimmed
                 )
 
                 val powerStateLabel = when {

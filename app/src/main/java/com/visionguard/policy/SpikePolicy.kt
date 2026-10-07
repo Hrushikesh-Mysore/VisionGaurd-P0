@@ -1,34 +1,40 @@
-// Pure Kotlin proximity policy with hysteresis and approximate distance estimation.
-// Zero Android framework imports to guarantee standalone JVM testability.
+// Pure Kotlin proximity and battery-saving protection policy.
+// Centralizes all proximity evaluation, hysteresis, and no-face idle dimming logic with zero Android dependencies.
 package com.visionguard.policy
 
-enum class ProximityState {
-    NO_FACE_DETECTED,
-    NORMAL_DISTANCE,
-    TOO_CLOSE
+enum class ProtectionState {
+    NORMAL_DISTANCE,       // Face detected at safe distance (no dim)
+    TOO_CLOSE,             // Face detected within ~20 cm proximity threshold (dim ON)
+    NO_FACE_GRACE_PERIOD,  // No face detected for < 5 seconds (no dim, avoids single-frame flicker)
+    NO_FACE_DIMMED         // No face detected for >= 5 seconds (dim ON for privacy & battery conservation)
 }
 
+data class PolicyDecision(
+    val state: ProtectionState,
+    val shouldDim: Boolean,
+    val isPowerSaving: Boolean,
+    val isFacePresent: Boolean,
+    val estimatedDistanceCm: Float?
+)
+
 /**
- * Evaluates face dimensions against proximity thresholds with hysteresis.
+ * State machine evaluating camera detection frames against proximity thresholds and no-face timeout.
  *
  * Distance calibration note:
- * Distance is approximate (pinhole model: distance ≈ K / widthFraction).
- * On standard front camera FOV (~75°):
- * - widthFraction >= 0.60 corresponds to roughly 20 cm or closer (TOO CLOSE).
- * - widthFraction <= 0.45 corresponds to roughly 30 cm or farther (RECOVERED).
- * Hysteresis between 0.45 and 0.60 prevents screen flickering around the boundary.
+ * Distance is approximate based on front-camera optical geometry (d ≈ K / widthFraction, K ≈ 12.0).
+ * - widthFraction >= 0.60: ~20 cm or closer (TOO_CLOSE)
+ * - widthFraction <= 0.45: ~30 cm or farther (NORMAL_DISTANCE recovery)
+ * - No face for >= 5000 ms: NO_FACE_DIMMED (Screen dimmed, 1 fps low-power polling)
  */
-class ProximityEstimator(
+class ProtectionPolicy(
     val triggerThresholdFraction: Float = DEFAULT_TRIGGER_THRESHOLD_FRACTION,
-    val recoveryThresholdFraction: Float = DEFAULT_RECOVERY_THRESHOLD_FRACTION
+    val recoveryThresholdFraction: Float = DEFAULT_RECOVERY_THRESHOLD_FRACTION,
+    val noFaceTimeoutMs: Long = DEFAULT_NO_FACE_TIMEOUT_MS
 ) {
     companion object {
-        // ~20 cm: face fills 60% of upright frame width
         const val DEFAULT_TRIGGER_THRESHOLD_FRACTION = 0.60f
-        // ~30 cm: face fills 45% of upright frame width
         const val DEFAULT_RECOVERY_THRESHOLD_FRACTION = 0.45f
-
-        // Estimated optical constant (K ≈ 20 cm * 0.60 ≈ 12.0)
+        const val DEFAULT_NO_FACE_TIMEOUT_MS = 5000L
         private const val APPROX_K = 12.0f
 
         fun calculateWidthFraction(boundingBoxWidth: Int, uprightImageWidth: Int): Float {
@@ -42,26 +48,64 @@ class ProximityEstimator(
         }
     }
 
-    var isCurrentlyTooClose: Boolean = false
-        private set
+    private var isProximityTooClose: Boolean = false
+    private var lastFaceSeenTimeMs: Long = 0L
+    private var hasSeenFirstFrame: Boolean = false
 
-    fun evaluate(faceDetected: Boolean, widthFraction: Float): ProximityState {
-        if (!faceDetected || widthFraction <= 0f) {
-            // No face detected: system must never pretend to know distance or remain in too-close state
-            isCurrentlyTooClose = false
-            return ProximityState.NO_FACE_DETECTED
+    fun evaluate(faceDetected: Boolean, widthFraction: Float, currentTimeMs: Long): PolicyDecision {
+        if (!hasSeenFirstFrame) {
+            hasSeenFirstFrame = true
+            lastFaceSeenTimeMs = currentTimeMs
         }
 
-        isCurrentlyTooClose = when {
-            isCurrentlyTooClose && widthFraction < recoveryThresholdFraction -> false
-            !isCurrentlyTooClose && widthFraction >= triggerThresholdFraction -> true
-            else -> isCurrentlyTooClose
-        }
+        if (faceDetected && widthFraction > 0f) {
+            lastFaceSeenTimeMs = currentTimeMs
 
-        return if (isCurrentlyTooClose) ProximityState.TOO_CLOSE else ProximityState.NORMAL_DISTANCE
+            // Evaluate proximity with hysteresis
+            isProximityTooClose = when {
+                isProximityTooClose && widthFraction < recoveryThresholdFraction -> false
+                !isProximityTooClose && widthFraction >= triggerThresholdFraction -> true
+                else -> isProximityTooClose
+            }
+
+            val state = if (isProximityTooClose) ProtectionState.TOO_CLOSE else ProtectionState.NORMAL_DISTANCE
+            return PolicyDecision(
+                state = state,
+                shouldDim = isProximityTooClose,
+                isPowerSaving = false,
+                isFacePresent = true,
+                estimatedDistanceCm = estimateDistanceCm(widthFraction)
+            )
+        } else {
+            // No face detected in this frame
+            isProximityTooClose = false
+            val elapsedNoFaceMs = currentTimeMs - lastFaceSeenTimeMs
+
+            return if (elapsedNoFaceMs >= noFaceTimeoutMs) {
+                // Dim screen and enter low-power state after 5 seconds continuous no-face
+                PolicyDecision(
+                    state = ProtectionState.NO_FACE_DIMMED,
+                    shouldDim = true,
+                    isPowerSaving = true,
+                    isFacePresent = false,
+                    estimatedDistanceCm = null
+                )
+            } else {
+                // Grace period: do not dim immediately to prevent flicker on dropped frames
+                PolicyDecision(
+                    state = ProtectionState.NO_FACE_GRACE_PERIOD,
+                    shouldDim = false,
+                    isPowerSaving = false,
+                    isFacePresent = false,
+                    estimatedDistanceCm = null
+                )
+            }
+        }
     }
 
-    fun reset() {
-        isCurrentlyTooClose = false
+    fun reset(currentTimeMs: Long = 0L) {
+        isProximityTooClose = false
+        lastFaceSeenTimeMs = currentTimeMs
+        hasSeenFirstFrame = false
     }
 }

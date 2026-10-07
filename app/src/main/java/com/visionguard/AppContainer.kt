@@ -4,7 +4,8 @@ package com.visionguard
 
 import android.content.Context
 import com.visionguard.overlay.SpikeOverlayManager
-import com.visionguard.policy.ProximityState
+import com.visionguard.policy.PolicyDecision
+import com.visionguard.policy.ProtectionState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -12,14 +13,20 @@ import kotlinx.coroutines.flow.asStateFlow
 data class SpikeMetrics(
     val isServiceRunning: Boolean = false,
     val isPaused: Boolean = false,
+    val protectionState: ProtectionState = ProtectionState.NO_FACE_GRACE_PERIOD,
+    val shouldDim: Boolean = false,
     val isPowerSaving: Boolean = false,
+    val isFacePresent: Boolean = false,
     val faceCount: Int = 0,
     val widthFraction: Float = 0f,
-    val proximityState: ProximityState = ProximityState.NO_FACE_DETECTED,
+    val estimatedDistanceCm: Float? = null,
     val isCameraBound: Boolean = false
 ) {
     val isTooClose: Boolean
-        get() = proximityState == ProximityState.TOO_CLOSE
+        get() = protectionState == ProtectionState.TOO_CLOSE
+
+    val isNoFaceDimmed: Boolean
+        get() = protectionState == ProtectionState.NO_FACE_DIMMED
 }
 
 class AppContainer(private val appContext: Context) {
@@ -35,10 +42,13 @@ class AppContainer(private val appContext: Context) {
         _spikeMetrics.value = _spikeMetrics.value.copy(
             isServiceRunning = isRunning,
             isPaused = if (!isRunning) false else _spikeMetrics.value.isPaused,
-            isPowerSaving = if (!isRunning) false else _spikeMetrics.value.isPowerSaving,
+            protectionState = if (isRunning) _spikeMetrics.value.protectionState else ProtectionState.NO_FACE_GRACE_PERIOD,
+            shouldDim = if (isRunning) _spikeMetrics.value.shouldDim else false,
+            isPowerSaving = if (isRunning) _spikeMetrics.value.isPowerSaving else false,
+            isFacePresent = if (isRunning) _spikeMetrics.value.isFacePresent else false,
             faceCount = if (isRunning) _spikeMetrics.value.faceCount else 0,
             widthFraction = if (isRunning) _spikeMetrics.value.widthFraction else 0f,
-            proximityState = if (isRunning) _spikeMetrics.value.proximityState else ProximityState.NO_FACE_DETECTED,
+            estimatedDistanceCm = if (isRunning) _spikeMetrics.value.estimatedDistanceCm else null,
             isCameraBound = if (isRunning) _spikeMetrics.value.isCameraBound else false
         )
     }
@@ -46,27 +56,23 @@ class AppContainer(private val appContext: Context) {
     fun updatePaused(isPaused: Boolean) {
         _spikeMetrics.value = _spikeMetrics.value.copy(
             isPaused = isPaused,
-            // When paused, clear proximity warning and power saving indicator
-            proximityState = if (isPaused) ProximityState.NO_FACE_DETECTED else _spikeMetrics.value.proximityState,
-            isPowerSaving = if (isPaused) false else _spikeMetrics.value.isPowerSaving
+            shouldDim = if (isPaused) false else _spikeMetrics.value.shouldDim
         )
-    }
-
-    fun updatePowerSaving(isPowerSaving: Boolean) {
-        if (_spikeMetrics.value.isPowerSaving != isPowerSaving) {
-            _spikeMetrics.value = _spikeMetrics.value.copy(isPowerSaving = isPowerSaving)
-        }
     }
 
     fun updateCameraBound(isBound: Boolean) {
         _spikeMetrics.value = _spikeMetrics.value.copy(isCameraBound = isBound)
     }
 
-    fun updateDetections(faceCount: Int, widthFraction: Float, proximityState: ProximityState) {
+    fun updatePolicyDecision(decision: PolicyDecision, faceCount: Int, widthFraction: Float) {
         _spikeMetrics.value = _spikeMetrics.value.copy(
+            protectionState = decision.state,
+            shouldDim = decision.shouldDim && !_spikeMetrics.value.isPaused,
+            isPowerSaving = decision.isPowerSaving && !_spikeMetrics.value.isPaused,
+            isFacePresent = decision.isFacePresent,
             faceCount = faceCount,
             widthFraction = widthFraction,
-            proximityState = proximityState
+            estimatedDistanceCm = decision.estimatedDistanceCm
         )
     }
 }

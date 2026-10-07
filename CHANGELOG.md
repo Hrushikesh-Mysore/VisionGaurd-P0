@@ -2,14 +2,17 @@
 
 All notable changes to the VisionGuard project will be documented in this file.
 
-## [Phase 0 Fixes] - 2026-10-07
+## [Phase 0 Final Fixes] - 2026-10-07
 ### Changed
-- Refactored `SpikePolicy` into stateful `ProximityEstimator` with hysteresis: trigger at ~20 cm (`widthFraction >= 0.60`), recovery at ~30 cm (`widthFraction <= 0.45`), eliminating boundary flicker.
-- Proximity detection now relies purely on overall face bounding box width; does not require eye visibility or landmarks, and explicitly clears proximity dimming when no face is in view.
-- Added battery power-saving gating: when no face is detected for $> 5$ seconds, frame analysis throttles to 1 fps until a face reappears.
-- Added persistent notification controls: interactive "Pause Protection" and "Resume Protection" actions that temporarily toggle proximity dimming without killing the foreground service.
-- Expanded JVM unit test suite to 5 tests covering hysteresis, boundary conditions, and no-face handling.
-- Re-verified zero-network manifest and deployed updated APK to Motorola Moto E7 Plus (`ZF6526CJ97`).
+- Centralized policy engine into `ProtectionPolicy` with explicit state machine (`NORMAL_DISTANCE`, `TOO_CLOSE`, `NO_FACE_GRACE_PERIOD`, `NO_FACE_DIMMED`).
+- Proximity estimation tuned to ~20 cm trigger (`widthFraction >= 0.60`) and ~30 cm recovery (`widthFraction <= 0.45`) with hysteresis.
+- Proximity strictly uses face bounding box geometry and does not require visible eyes or facial landmarks.
+- No-face power-saving behavior: continuous no-face for $> 5$ seconds transitions to `NO_FACE_DIMMED`, enabling the screen dim overlay and throttling camera analysis to 1 fps idle polling to save battery.
+- Seamless face return: detecting a face immediately exits `NO_FACE_DIMMED`, restores full-rate analysis, and maintains dim only if the returning face is within the ~20 cm proximity threshold.
+- Interactive persistent notification controls ("Pause Protection" / "Resume Protection") that unbind camera hardware and suspend dimming without destroying the service.
+- Maintained screen-off/screen-on lifecycle gating.
+- Expanded JVM unit test suite to 8 passing tests in `SpikePolicyTest`.
+- Confirmed zero-network permissions in merged Android manifest and installed debug APK on Motorola Moto E7 Plus (`ZF6526CJ97`).
 
 ## [Phase 0] - 2026-10-07
 ### Added

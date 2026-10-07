@@ -1,6 +1,6 @@
 // Foreground service hosting the CameraX lifecycle and offline ML Kit face detection.
-// Provides persistent notification pause/resume controls, hysteresis-based proximity dimming,
-// and 1 fps battery power-saving gating when no face is detected for over 5 seconds.
+// Integrates ProtectionPolicy state machine for ~20 cm proximity dimming, notification pause/resume,
+// screen on/off power gating, and 5s no-face idle dimming with 1 fps low-power polling.
 package com.visionguard.vision
 
 import android.app.Notification
@@ -31,8 +31,7 @@ import com.google.mlkit.vision.face.FaceDetector
 import com.google.mlkit.vision.face.FaceDetectorOptions
 import com.visionguard.R
 import com.visionguard.VisionGuardApp
-import com.visionguard.policy.ProximityEstimator
-import com.visionguard.policy.ProximityState
+import com.visionguard.policy.ProtectionPolicy
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
@@ -42,10 +41,9 @@ class CameraForegroundService : LifecycleService() {
     private var cameraProvider: ProcessCameraProvider? = null
     private lateinit var cameraExecutor: ExecutorService
     private lateinit var faceDetector: FaceDetector
-    private val proximityEstimator = ProximityEstimator()
+    private val protectionPolicy = ProtectionPolicy()
 
     private var isPaused: Boolean = false
-    private var lastFaceDetectedTimeMs: Long = 0L
     private var lastAnalyzedFrameTimeMs: Long = 0L
 
     private val screenStateReceiver = object : BroadcastReceiver() {
@@ -58,6 +56,7 @@ class CameraForegroundService : LifecycleService() {
                 Intent.ACTION_SCREEN_ON -> {
                     Log.d(tag, "Screen ON detected: rebinding camera analysis")
                     if (!isPaused) {
+                        protectionPolicy.reset(SystemClock.elapsedRealtime())
                         bindCameraAnalysis()
                     }
                 }
@@ -68,9 +67,8 @@ class CameraForegroundService : LifecycleService() {
     override fun onCreate() {
         super.onCreate()
         cameraExecutor = Executors.newSingleThreadExecutor()
-        lastFaceDetectedTimeMs = SystemClock.elapsedRealtime()
 
-        // Fast bounding box detection without requiring eye landmarks or classifications
+        // Pure bounding box detection without requiring eye landmarks or classifications
         val detectorOptions = FaceDetectorOptions.Builder()
             .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
             .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_NONE)
@@ -88,6 +86,7 @@ class CameraForegroundService : LifecycleService() {
         startAsForeground()
 
         VisionGuardApp.instance.container.updateServiceRunning(true)
+        protectionPolicy.reset(SystemClock.elapsedRealtime())
         bindCameraAnalysis()
     }
 
@@ -113,7 +112,7 @@ class CameraForegroundService : LifecycleService() {
             isPaused = true
             Log.d(tag, "Protection paused by user")
             VisionGuardApp.instance.container.overlayManager.hideOverlay()
-            proximityEstimator.reset()
+            protectionPolicy.reset(SystemClock.elapsedRealtime())
             VisionGuardApp.instance.container.updatePaused(true)
             updateNotification()
         }
@@ -123,7 +122,7 @@ class CameraForegroundService : LifecycleService() {
         if (isPaused) {
             isPaused = false
             Log.d(tag, "Protection resumed by user")
-            lastFaceDetectedTimeMs = SystemClock.elapsedRealtime()
+            protectionPolicy.reset(SystemClock.elapsedRealtime())
             VisionGuardApp.instance.container.updatePaused(false)
             updateNotification()
             bindCameraAnalysis()
@@ -255,11 +254,10 @@ class CameraForegroundService : LifecycleService() {
         }
 
         val now = SystemClock.elapsedRealtime()
-        val isNoUserIdle = (now - lastFaceDetectedTimeMs) > NO_FACE_IDLE_TIMEOUT_MS
-        VisionGuardApp.instance.container.updatePowerSaving(isNoUserIdle)
+        val isLowPower = VisionGuardApp.instance.container.spikeMetrics.value.isPowerSaving
 
-        // Battery optimization: if no face for > 5s, throttle analysis to 1 fps
-        if (isNoUserIdle && (now - lastAnalyzedFrameTimeMs) < IDLE_FRAME_POLL_INTERVAL_MS) {
+        // Low-power polling: when no face has been detected for >5s, throttle analysis to 1 fps
+        if (isLowPower && (now - lastAnalyzedFrameTimeMs) < IDLE_FRAME_POLL_INTERVAL_MS) {
             imageProxy.close()
             return
         }
@@ -284,27 +282,22 @@ class CameraForegroundService : LifecycleService() {
             faceDetector.process(inputImage)
                 .addOnSuccessListener { faces ->
                     val faceDetected = faces.isNotEmpty()
-                    if (faceDetected) {
-                        lastFaceDetectedTimeMs = SystemClock.elapsedRealtime()
-                        VisionGuardApp.instance.container.updatePowerSaving(false)
-                    }
-
                     val faceCount = faces.size
                     val largestFace = faces.maxByOrNull { it.boundingBox.width() }
                     val widthFraction = if (largestFace != null) {
-                        ProximityEstimator.calculateWidthFraction(largestFace.boundingBox.width(), uprightWidth)
+                        ProtectionPolicy.calculateWidthFraction(largestFace.boundingBox.width(), uprightWidth)
                     } else {
                         0f
                     }
 
-                    // Pure face-geometry proximity decision using hysteresis
-                    val proximityState = proximityEstimator.evaluate(faceDetected, widthFraction)
+                    // Centralized policy evaluation (proximity hysteresis + 5s no-face dimming timeout)
+                    val decision = protectionPolicy.evaluate(faceDetected, widthFraction, SystemClock.elapsedRealtime())
 
-                    Log.d(tag, "Detection: faces=$faceCount, widthFraction=%.3f, state=$proximityState".format(widthFraction))
+                    Log.d(tag, "Policy: state=${decision.state}, dim=${decision.shouldDim}, powerSave=${decision.isPowerSaving}, widthFraction=%.3f".format(widthFraction))
 
-                    VisionGuardApp.instance.container.updateDetections(faceCount, widthFraction, proximityState)
+                    VisionGuardApp.instance.container.updatePolicyDecision(decision, faceCount, widthFraction)
 
-                    if (!isPaused && proximityState == ProximityState.TOO_CLOSE) {
+                    if (!isPaused && decision.shouldDim) {
                         VisionGuardApp.instance.container.overlayManager.showOverlay()
                     } else {
                         VisionGuardApp.instance.container.overlayManager.hideOverlay()
@@ -345,7 +338,6 @@ class CameraForegroundService : LifecycleService() {
         const val ACTION_STOP_SERVICE = "com.visionguard.action.STOP_SERVICE"
         const val ACTION_PAUSE_PROTECTION = "com.visionguard.action.PAUSE_PROTECTION"
         const val ACTION_RESUME_PROTECTION = "com.visionguard.action.RESUME_PROTECTION"
-        const val NO_FACE_IDLE_TIMEOUT_MS = 5000L
         const val IDLE_FRAME_POLL_INTERVAL_MS = 1000L
     }
 }
