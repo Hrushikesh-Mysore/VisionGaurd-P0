@@ -1,5 +1,5 @@
 // Lightweight application dependency container managing singleton instances.
-// Holds Room database, overlay manager, calibration configuration, and reactive metrics.
+// Holds Room database, overlay manager, usage statistics repository, suggestion engine, and metrics.
 package com.visionguard
 
 import android.content.Context
@@ -12,6 +12,8 @@ import com.visionguard.policy.EyeGuardPolicy
 import com.visionguard.policy.PolicyDecision
 import com.visionguard.policy.PrivacyGuardDecision
 import com.visionguard.policy.ProtectionState
+import com.visionguard.policy.SuggestionEngine
+import com.visionguard.usage.UsageRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -19,6 +21,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.util.Calendar
 
 data class SpikeMetrics(
     val isServiceRunning: Boolean = false,
@@ -67,6 +70,14 @@ class AppContainer(private val appContext: Context) {
         SpikeOverlayManager(appContext)
     }
 
+    val usageRepository: UsageRepository by lazy {
+        UsageRepository(appContext)
+    }
+
+    val suggestionEngine: SuggestionEngine by lazy {
+        SuggestionEngine()
+    }
+
     private val _calibrationK = MutableStateFlow(EyeGuardPolicy.DEFAULT_CALIBRATION_K)
     val calibrationK: StateFlow<Float> = _calibrationK.asStateFlow()
 
@@ -75,6 +86,13 @@ class AppContainer(private val appContext: Context) {
 
     private val _isPrivacyGuardEnabled = MutableStateFlow(true)
     val isPrivacyGuardEnabled: StateFlow<Boolean> = _isPrivacyGuardEnabled.asStateFlow()
+
+    private val _dailyGoalHours = MutableStateFlow(4.0f)
+    val dailyGoalHours: StateFlow<Float> = _dailyGoalHours.asStateFlow()
+
+    // FLAG_SECURE setting: Off by default for pitch recording and screenshots
+    private val _isSecureModeEnabled = MutableStateFlow(false)
+    val isSecureModeEnabled: StateFlow<Boolean> = _isSecureModeEnabled.asStateFlow()
 
     private val _spikeMetrics = MutableStateFlow(SpikeMetrics())
     val spikeMetrics: StateFlow<SpikeMetrics> = _spikeMetrics.asStateFlow()
@@ -93,6 +111,14 @@ class AppContainer(private val appContext: Context) {
         logEvent("SETTING", clamped, "Target threshold updated to %.0f cm".format(clamped))
     }
 
+    fun setDailyGoalHours(hours: Float) {
+        _dailyGoalHours.value = hours.coerceIn(1.0f, 12.0f)
+    }
+
+    fun setSecureModeEnabled(enabled: Boolean) {
+        _isSecureModeEnabled.value = enabled
+    }
+
     fun setPrivacyGuardEnabled(enabled: Boolean) {
         _isPrivacyGuardEnabled.value = enabled
         _spikeMetrics.value = _spikeMetrics.value.copy(
@@ -100,7 +126,6 @@ class AppContainer(private val appContext: Context) {
             isPrivacyAlertActive = if (!enabled) false else _spikeMetrics.value.isPrivacyAlertActive
         )
         if (!enabled) {
-            // If disabled while alert is showing, hide privacy shield
             if (_spikeMetrics.value.isPrivacyAlertActive) {
                 overlayManager.updateGuards(
                     isPrivacyActive = false,
@@ -110,6 +135,15 @@ class AppContainer(private val appContext: Context) {
             }
         }
         logEvent("PRIVACY_TOGGLED", null, if (enabled) "Privacy Guard enabled" else "Privacy Guard disabled")
+    }
+
+    fun getStartOfTodayMillis(): Long {
+        val cal = Calendar.getInstance()
+        cal.set(Calendar.HOUR_OF_DAY, 0)
+        cal.set(Calendar.MINUTE, 0)
+        cal.set(Calendar.SECOND, 0)
+        cal.set(Calendar.MILLISECOND, 0)
+        return cal.timeInMillis
     }
 
     fun logEvent(eventType: String, distanceCm: Float?, detail: String) {

@@ -1,5 +1,5 @@
-// Data Access Object for querying and recording local Eye Guard events.
-// Provides reactive Flow streams for UI observation without main thread blocking.
+// Data Access Object for querying and recording local safety events.
+// Provides reactive Flow streams for UI observation and dashboard metric aggregation.
 package com.visionguard.data
 
 import androidx.room.Dao
@@ -17,6 +17,12 @@ interface EyeGuardEventDao {
 
     @Query("SELECT COUNT(*) FROM eye_guard_events WHERE eventType = :eventType")
     suspend fun getCountByEventType(eventType: String): Int
+
+    @Query("SELECT COUNT(*) FROM eye_guard_events WHERE eventType = :eventType AND timestamp >= :sinceTimestamp")
+    fun getCountSince(eventType: String, sinceTimestamp: Long): Flow<Int>
+
+    @Query("SELECT COUNT(*) FROM eye_guard_events WHERE eventType = :eventType AND timestamp >= :sinceTimestamp")
+    suspend fun getCountSinceDirect(eventType: String, sinceTimestamp: Long): Int
 
     @Query("DELETE FROM eye_guard_events")
     suspend fun clearAll()

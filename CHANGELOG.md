@@ -2,6 +2,36 @@
 
 All notable changes to the VisionGuard project will be documented in this file.
 
+## [Phase 3 - Smart Dashboard] - 2026-10-08
+### Added
+- Foreground app usage tracking via `UsageRepository` querying `UsageStatsManager.queryEvents`:
+  - Accurately pairs `ACTIVITY_RESUMED` and `ACTIVITY_PAUSED` transitions per package.
+  - Excludes our own app, the default system launcher, and internal system processes.
+  - Computes today's total foreground screen time, per-app breakdown with application labels and icons (`PackageManager`), percentage bars, and continuous feed session lengths.
+  - Aggregates 7-day usage history for trend charting.
+- Pure Kotlin `SuggestionEngine` in `com.visionguard.policy` (zero Android imports, `Clock` abstraction):
+  - Rule 1: $\ge 40$ continuous minutes in feed/social/video apps suggests a walk, stretch, or physical book.
+  - Rule 2: Frequent Eye Guard triggers ($\ge 5$ times) suggests the 20-20-20 rule.
+  - Rule 3: Late-night usage after 11 PM or before 5 AM suggests winding down for sleep.
+  - Rule 4: Balanced screen habits return positive digital wellbeing encouragement.
+  - Fully covered by 7 JVM unit tests in `SuggestionEngineTest`.
+- Room DAO query expansion: `getCountSince` in `EyeGuardEventDao` providing reactive Flow counts for today's Eye Guard (`TOO_CLOSE`) and Privacy Guard (`PRIVACY_ALERT`) safety events.
+- Hero Smart Dashboard UI (`SmartDashboardScreen`) in Compose:
+  - Date and profile chip header (placeholder for Phase 4 profiles).
+  - Hero Card displaying today's total screen time and custom Compose `Canvas` circular progress ring against daily goal.
+  - Daily goal selector chips (2h, 3h, 4h default, 6h).
+  - Protection today cards displaying real counts for Eye Guard reminders and Privacy Guard alerts.
+  - Dynamic rule-based suggestion card powered by `SuggestionEngine`.
+  - 7-day trend bar chart drawn natively with Compose `Canvas` with today's bar highlighted in primary color.
+  - Top 5 apps list with app icons, names, formatted durations, and proportional progress indicators.
+  - Screenshot protection switch (`FLAG_SECURE`, off by default for demo recording).
+  - Empty state with direct deep link to system usage access settings.
+- State-based bottom navigation bar in `MainActivity` with "Protection" (Eye & Privacy HUD) and "Dashboard" tabs without external navigation libraries.
+- Added `PACKAGE_USAGE_STATS` declaration to manifest and usage access deep link to the first-run permissions checklist.
+- Merged manifest privacy audit: confirmed zero network permissions (`INTERNET`, `ACCESS_NETWORK_STATE` strictly absent).
+- Total unit tests increased to **30/30 passed** across `SuggestionEngineTest`, `PrivacyGuardPolicyTest`, `EyeGuardPolicyTest`, and `SpikePolicyTest`.
+- Debug APK deployed and tested on Motorola Moto E7 Plus (`ZF6526CJ97`, Android 10).
+
 ## [Phase 2 - Privacy Guard] - 2026-10-07
 ### Added
 - Multi-face observation model in `FaceObservation` with `DetectedFace` (width fraction, yaw angle) distinguishing owner from secondary viewers.
@@ -24,7 +54,7 @@ All notable changes to the VisionGuard project will be documented in this file.
 - Extended Live Detection Metrics HUD displaying total faces, secondary viewers, confirmation frames, privacy guard state, and active overlay mode.
 - Comprehensive JVM unit test suite (`PrivacyGuardPolicyTest`) with 8 tests covering single face, small/turned faces, 3-frame confirmation, 2s absence clearance, manual dismissal, and guard priority (23/23 unit tests passing across all suites).
 - Merged manifest privacy audit confirmed: zero network permissions (`INTERNET`, `ACCESS_NETWORK_STATE` strictly absent).
-- Debug APK deployed and verified on connected test phone (`ZF6526CJ97`, Motorola Moto E7 Plus, Android 10).
+- Debug APK deployed on connected test phone (`ZF6526CJ97`, Motorola Moto E7 Plus, Android 10).
 
 ## [Phase 1 - Eye Guard] - 2026-10-07
 ### Added

@@ -1,6 +1,5 @@
-// Main launcher activity hosting VisionGuard Eye Guard & Privacy Guard screens.
-// Provides permission controls, privacy toggle, calibration workflow, distance thresholds,
-// Room safety event history inspection, and live multi-face detection metrics HUD.
+// Main launcher activity hosting VisionGuard Protection and Smart Dashboard screens.
+// Provides state-based bottom bar navigation, permission controls, and live multi-face detection metrics HUD.
 package com.visionguard.ui
 
 import android.Manifest
@@ -42,6 +41,11 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+enum class MainNavTab {
+    PROTECTION,
+    DASHBOARD
+}
+
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -50,11 +54,37 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(
                 colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()
             ) {
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background
-                ) {
-                    VisionGuardHomeScreen()
+                var currentTab by remember { mutableStateOf(MainNavTab.PROTECTION) }
+
+                Scaffold(
+                    bottomBar = {
+                        NavigationBar {
+                            NavigationBarItem(
+                                selected = currentTab == MainNavTab.PROTECTION,
+                                onClick = { currentTab = MainNavTab.PROTECTION },
+                                icon = { Text("🛡️", fontSize = 18.sp) },
+                                label = { Text("Protection") }
+                            )
+                            NavigationBarItem(
+                                selected = currentTab == MainNavTab.DASHBOARD,
+                                onClick = { currentTab = MainNavTab.DASHBOARD },
+                                icon = { Text("📊", fontSize = 18.sp) },
+                                label = { Text("Dashboard") }
+                            )
+                        }
+                    }
+                ) { innerPadding ->
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(innerPadding),
+                        color = MaterialTheme.colorScheme.background
+                    ) {
+                        when (currentTab) {
+                            MainNavTab.PROTECTION -> VisionGuardHomeScreen()
+                            MainNavTab.DASHBOARD -> SmartDashboardScreen()
+                        }
+                    }
                 }
             }
         }
@@ -83,6 +113,9 @@ fun VisionGuardHomeScreen() {
     var hasOverlayPermission by remember {
         mutableStateOf(Settings.canDrawOverlays(context))
     }
+    var hasUsagePermission by remember {
+        mutableStateOf(container.usageRepository.hasUsagePermission())
+    }
     var hasNotificationPermission by remember {
         mutableStateOf(
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -98,6 +131,7 @@ fun VisionGuardHomeScreen() {
             if (event == Lifecycle.Event.ON_RESUME) {
                 hasCameraPermission = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
                 hasOverlayPermission = Settings.canDrawOverlays(context)
+                hasUsagePermission = container.usageRepository.hasUsagePermission()
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     hasNotificationPermission = ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
                 }
@@ -638,6 +672,20 @@ fun VisionGuardHomeScreen() {
                     isGranted = hasOverlayPermission,
                     onRequest = { openOverlaySettings(context) },
                     onOpenSettings = { openOverlaySettings(context) }
+                )
+
+                PermissionItem(
+                    name = "Usage Access",
+                    description = "Required to compute foreground screen time and top apps for Smart Dashboard.",
+                    isGranted = hasUsagePermission,
+                    onRequest = {
+                        val intent = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
+                        context.startActivity(intent)
+                    },
+                    onOpenSettings = {
+                        val intent = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
+                        context.startActivity(intent)
+                    }
                 )
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
