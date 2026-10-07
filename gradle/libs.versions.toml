@@ -9,6 +9,8 @@ camera = "1.3.4"
 mlkitFaceDetection = "16.1.7"
 coroutines = "1.8.1"
 junit = "4.13.2"
+room = "2.6.1"
+ksp = "2.0.20-1.0.25"
 
 [libraries]
 # AndroidX Core extensions for Kotlin idiomatic language support
@@ -43,6 +45,12 @@ mlkit-face-detection = { group = "com.google.mlkit", name = "face-detection", ve
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 # Standard JUnit testing framework for unit tests
 junit = { group = "junit", name = "junit", version.ref = "junit" }
+# Room SQLite abstraction for local offline event and policy persistence
+androidx-room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
+# Room Kotlin extensions for coroutines and Flow support
+androidx-room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
+# Room annotation compiler processing entities and DAOs
+androidx-room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
 
 [plugins]
 # Android application build plugin
@@ -51,3 +59,5 @@ android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 # Kotlin Compose compiler plugin bundled with Kotlin 2.0+
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+# Kotlin Symbol Processing plugin for Room annotation processing
+ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }

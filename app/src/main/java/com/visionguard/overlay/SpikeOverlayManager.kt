@@ -1,11 +1,10 @@
 // Manages system overlay window for visual warning display across applications.
-// Ensures overlay is non-intrusive, fully click-through, and conforms to Android security constraints.
+// Supports proportional closeness-based opacity capped at 0.8 to ensure touch pass-through.
 package com.visionguard.overlay
 
 import android.content.Context
 import android.graphics.Color
 import android.graphics.PixelFormat
-import android.os.Build
 import android.provider.Settings
 import android.view.Gravity
 import android.view.View
@@ -22,18 +21,26 @@ class SpikeOverlayManager(private val context: Context) {
     private val _isOverlayVisible = MutableStateFlow(false)
     val isOverlayVisible: StateFlow<Boolean> = _isOverlayVisible.asStateFlow()
 
+    private val _currentOpacity = MutableStateFlow(0.0f)
+    val currentOpacity: StateFlow<Float> = _currentOpacity.asStateFlow()
+
     fun canDrawOverlays(): Boolean {
         return Settings.canDrawOverlays(context)
     }
 
     @Synchronized
-    fun showOverlay() {
+    fun showOverlay(opacity: Float = DEFAULT_ALPHA) {
         if (!canDrawOverlays()) return
-        if (overlayView != null) return
+        val clampedOpacity = opacity.coerceIn(0.1f, MAX_ALPHA)
 
+        if (overlayView != null) {
+            updateOpacity(clampedOpacity)
+            return
+        }
+
+        val alphaInt = (clampedOpacity * 255).toInt()
         val view = View(context).apply {
-            // Semi-transparent black (alpha ~ 0.5, well below Android 12 touch pass-through limit of 0.8)
-            setBackgroundColor(Color.argb(128, 0, 0, 0))
+            setBackgroundColor(Color.argb(alphaInt, 0, 0, 0))
         }
 
         val layoutParams = WindowManager.LayoutParams(
@@ -52,8 +59,23 @@ class SpikeOverlayManager(private val context: Context) {
             windowManager.addView(view, layoutParams)
             overlayView = view
             _isOverlayVisible.value = true
+            _currentOpacity.value = clampedOpacity
         } catch (e: Exception) {
             e.printStackTrace()
+        }
+    }
+
+    @Synchronized
+    fun updateOpacity(opacity: Float) {
+        val clampedOpacity = opacity.coerceIn(0.1f, MAX_ALPHA)
+        _currentOpacity.value = clampedOpacity
+        overlayView?.let { view ->
+            val alphaInt = (clampedOpacity * 255).toInt()
+            view.setBackgroundColor(Color.argb(alphaInt, 0, 0, 0))
+        } ?: run {
+            if (_isOverlayVisible.value) {
+                showOverlay(clampedOpacity)
+            }
         }
     }
 
@@ -67,6 +89,7 @@ class SpikeOverlayManager(private val context: Context) {
         } finally {
             overlayView = null
             _isOverlayVisible.value = false
+            _currentOpacity.value = 0.0f
         }
     }
 
@@ -75,7 +98,12 @@ class SpikeOverlayManager(private val context: Context) {
         if (overlayView != null) {
             hideOverlay()
         } else {
-            showOverlay()
+            showOverlay(DEFAULT_ALPHA)
         }
+    }
+
+    companion object {
+        const val DEFAULT_ALPHA = 0.50f
+        const val MAX_ALPHA = 0.80f // Android 12+ touch pass-through limit
     }
 }

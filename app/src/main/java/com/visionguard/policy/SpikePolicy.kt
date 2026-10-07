@@ -2,12 +2,7 @@
 // Centralizes all proximity evaluation, hysteresis, and no-face idle dimming logic with zero Android dependencies.
 package com.visionguard.policy
 
-enum class ProtectionState {
-    NORMAL_DISTANCE,       // Face detected at safe distance (no dim)
-    TOO_CLOSE,             // Face detected within ~20 cm proximity threshold (dim ON)
-    NO_FACE_GRACE_PERIOD,  // No face detected for < 5 seconds (no dim, avoids single-frame flicker)
-    NO_FACE_DIMMED         // No face detected for >= 5 seconds (dim ON for privacy & battery conservation)
-}
+
 
 data class PolicyDecision(
     val state: ProtectionState,

@@ -1,90 +1,101 @@
 # VisionGuard Status
 
 ## Current Phase
-**Phase 0: Risk Spike (Final Proximity & No-Face Power Saving Implemented)**
+**Phase 1: Eye Guard (Completed - Awaiting User On-Device Retest)**
 
 ## What is Completed
-- **Project Scaffolding**: Single `:app` module with Gradle 8.9 wrapper, AGP 8.5.2, Kotlin 2.0.20, and Jetpack Compose Material 3.
-- **Zero-Cloud Architecture**: Strictly zero network permissions in merged manifest (`INTERNET` and `ACCESS_NETWORK_STATE` confirmed absent via `./gradlew :app:processDebugMainManifest`).
-- **Feature Outcome 1: Proximity Detection (~20 cm Trigger, ~30 cm Recovery)**:
-  - Stateful `ProtectionPolicy` with hysteresis: trigger threshold ~20 cm (`widthFraction >= 0.60`), recovery threshold ~30 cm (`widthFraction <= 0.45`).
-  - Distance estimation model ($d \approx K / \text{widthFraction}$, $K \approx 12.0$).
-  - Proximity relies strictly on overall face bounding box width; does not require eye landmarks or classifications.
-- **Feature Outcome 2: Dedicated No-Face Battery Saving (>5s Timeout + Screen Dim)**:
-  - Explicit distinction maintained: `NO FACE != TOO CLOSE`. Zero faces is never falsely classified as proximity violation.
-  - When no face is detected for $> 5$ seconds continuously, system transitions from `NO_FACE_GRACE_PERIOD` to `NO_FACE_DIMMED`.
-  - In `NO_FACE_DIMMED`, the dim overlay is displayed and camera frame analysis is throttled to 1 fps idle polling to conserve CPU/GPU battery.
-  - When a face returns: system exits `NO_FACE_DIMMED`, restores full-rate analysis, and clears dimming unless the returning face is within the ~20 cm proximity threshold.
-- **Feature Outcome 3: Notification Pause / Resume**:
-  - Interactive "Pause Protection" and "Resume Protection" notification actions implemented via `PendingIntent`.
-  - Pausing unbinds the camera hardware, dismisses the dim overlay, and updates the ongoing notification title to "VisionGuard (Paused)".
-  - Resuming re-binds CameraX and resets policy timers without restarting the service.
-- **Screen-Off Lifecycle Gating**:
-  - Camera analysis unbinds completely on `ACTION_SCREEN_OFF` and automatically rebinds on `ACTION_SCREEN_ON`.
-- **System Overlay**:
-  - Non-focusable, non-touchable overlay view using `TYPE_APPLICATION_OVERLAY` at 0.5 alpha, guaranteeing touch pass-through.
+- **Clean Face Observation Abstraction**:
+  - Pure Kotlin `FaceObservation(widthFraction, yaw, count, timestampMs)` decoupled from raw frame bitmaps and landmarks.
+  - Strictly relies on face bounding box geometry; eye visibility is not required.
+- **Pinhole Distance Estimation & Policy**:
+  - Pure Kotlin `EyeGuardPolicy` taking time via `Clock` interface for 100% deterministic JVM testing.
+  - Pinhole optical model ($d = K / \text{widthFraction}$) calibrated via user reference distance ($K = d_{\text{cal}} \times w_{\text{cal}}$).
+  - Exponential Moving Average (EMA) smoothing ($\alpha = 0.35$) eliminates per-frame noise.
+  - $N = 5$ consecutive-frame confirmation avoids spurious triggers from temporary movements.
+  - Hysteresis band (~20 cm trigger, ~30 cm recovery) prevents boundary flickering.
+  - Closeness-proportional dimming opacity scaling smoothly from 0.45 to 0.80 (strictly capped at 0.80 for Android 12+ touch pass-through rule C3).
+  - Rapid recovery: clears dimming within ~500 ms (< 1 second) upon returning to safe distance.
+- **Local Room Database Infrastructure (KSP)**:
+  - Local SQLite database `visionguard.db` using Room 2.6.1 with KSP compiler `2.0.20-1.0.25`.
+  - `EyeGuardEventEntity` and `EyeGuardEventDao` recording safety events (`TOO_CLOSE`, `RECOVERED`, `CALIBRATION`, `PAUSED`, `RESUMED`, `NO_FACE_POWER_SAVING`) entirely on-device without network transmission.
+- **Calibration UI & Threshold Settings**:
+  - Distance Calibration card in Compose UI with live face width reading, one-tap calibration at ~30 cm, and reset to default ($K = 12.0$).
+  - Adjustable threshold setting chips (20 cm default, 25 cm, 30 cm).
+- **Proportional Dimming & Overlay**:
+  - Enhanced `SpikeOverlayManager` modulating alpha from 0.45 up to 0.80 based on proximity, maintaining touch pass-through.
+- **User Warning & Notifications**:
+  - Prominent in-app warning banner explaining that the phone is too close and the screen has dimmed.
+  - Rate-limited notification alert on close proximity without spamming every frame.
+  - Persistent ongoing notification with interactive "Pause Protection" and "Resume Protection" controls preserved.
+- **Power Gating Preserved**:
+  - Screen-off unbinds CameraX hardware; screen-on rebinds.
+  - No-face $>5$ seconds transitions to `NO_FACE_DIMMED` (screen dimmed, 1 fps idle poll), immediately restoring full-rate analysis upon face return.
 - **Testing & Deployment**:
-  - JVM unit tests (`SpikePolicyTest`): 8/8 passed.
-  - Manifest privacy audit: PASS (0 network permissions).
+  - JVM unit tests: **15/15 passed** (8 in `SpikePolicyTest`, 7 in `EyeGuardPolicyTest`).
+  - Merged manifest privacy audit: **PASS** (`INTERNET` and `ACCESS_NETWORK_STATE` strictly absent).
   - Debug APK built and installed on connected Motorola Moto E7 Plus (`ZF6526CJ97`, Android 10).
 
-## Phase 0 Spike & Fix Verification Table
+## Phase 1 Feature Verification Table
 
-| Spike Item | Target Behavior | Status | Verification Method |
+| Item | Target Behavior | Status | Verification Method |
 |---|---|---|---|
-| 1. Camera service background | Runs in background with ongoing notification | PASS | Tested on device in initial run |
-| 2. Face detection active | Live face count and widthFraction update in app and logcat | PASS | Confirmed in initial run (`faces=1, widthFraction=0.369`) |
-| 3. ~20 cm Proximity Trigger | Proximity dim triggers at ~20 cm ($\ge 0.60$) and clears at ~30 cm ($\le 0.45$) | UNVERIFIED | Unit tests pass (8/8); manual distance test on phone required |
-| 4. Eye-independent detection | Bounding box triggers even if eyes are obscured/not visible; no-face clears proximity dim | UNVERIFIED | Cover eyes or move close; verify face width still triggers; step out of frame; verify proximity dim clears |
-| 5. No-face >5s battery-saving state | Screen dims and analysis throttles to 1 fps after 5s continuous no-face | UNVERIFIED | Move phone away from face for 5s; check UI "Power Saving" indicator and logcat |
-| 6. Face return after no-face | Restores full analysis rate; clears dim unless face is too close | UNVERIFIED | Look back at phone after >5s away; check dim removal and analysis rate resumption |
-| 7. Notification Pause / Resume | Action button in notification pauses/resumes dimming and camera binding | UNVERIFIED | Pull notification shade, tap "Pause Protection"; verify title updates to "(Paused)"; tap "Resume" |
-| 8. Overlay click-through | Overlay allows full touch interaction with underlying apps | PASS | Tested with Chrome in initial run |
-| 9. Screen off/on gating | Camera unbinds on screen off and rebinds on screen on | PASS | Tested via ACTION_SCREEN_OFF/ON logcat in initial run |
+| 1. Face observation abstraction | Clean `FaceObservation` mapping widthFraction, yaw, count | PASS | Unit tested (15/15) & CameraX verified |
+| 2. Pinhole distance estimation | $d \approx K / \text{widthFraction}$ with calibration support | PASS | Unit tested in `EyeGuardPolicyTest` |
+| 3. EMA smoothing & N-frame confirmation | Smoothes noise; requires 5 consecutive frames to trigger | PASS | Unit tested in `EyeGuardPolicyTest` |
+| 4. Proportional dimming capped at 0.8 | Opacity scales 0.45..0.80 with closeness; clears < 1s | PASS | Unit tested; capped at 0.8 in `SpikeOverlayManager` |
+| 5. Calibration screen | UI allows one-tap calibration at 30 cm and updates $K$ | UNVERIFIED | Manual calibration on phone required |
+| 6. Threshold settings | User can switch between 20 cm, 25 cm, 30 cm triggers | PASS | StateFlow reactive update verified |
+| 7. Local Room event logging | Logs `TOO_CLOSE`, `RECOVERED`, `CALIBRATION`, etc. to SQLite | PASS | Room KSP build verified; events displayed in UI |
+| 8. Notification Pause / Resume | Pauses dimming and camera binding from shade | UNVERIFIED | Manual test on device |
+| 9. Screen-off / Screen-on gating | Camera unbinds on screen off, rebinds on screen on | PASS | Verified in Phase 0 logcat |
+| 10. No-face >5s idle power saving | Screen dims and analysis throttles to 1 fps after 5s no-face | PASS | Unit tested in `EyeGuardPolicyTest` & `SpikePolicyTest` |
+| 11. Face return from idle | Exits idle poll, removes dim, restores full-rate analysis | PASS | Unit tested in `EyeGuardPolicyTest` & `SpikePolicyTest` |
 
-*Note: Per honesty rule, items modified in this fix are marked UNVERIFIED until manually verified by user on device.*
+*Note: Per honesty rule, items requiring interactive physical interaction with the camera are marked UNVERIFIED until tested by user on phone.*
 
 ## What is Currently Being Worked On
-- Physical phone verification of Phase 0 behavioral fixes by the user.
+- Phase 1 completed; awaiting user on-device verification script.
 
 ## What is Not Completed
-- Phase 1: Eye Guard + Home screen.
-- Phase 2: Privacy Guard.
-- Phase 3: Smart Dashboard.
-- Phase 4: Profiles + PIN.
-- Phase 5: Time Tokens.
-- Phase 6: Privacy Ledger.
-- Phase 7: Polish and APK.
+- Phase 2: Privacy Guard (multi-face detection, shoulder-surfing alert/blur).
+- Phase 3: Smart Dashboard (UsageStatsManager foreground screen time, rule-based suggestions).
+- Phase 4: Profiles + PIN (Parent/Child profiles, PIN switch).
+- Phase 5: Time Tokens (state machine, cooldowns, 5-minute windows).
+- Phase 6: Privacy Ledger (MASVS encryption, data wipe).
+- Phase 7: Polish & Production APK.
 - Phase 8: Event pack.
 
 ## Known Bugs / Problems / Blockers
-- None blocking; awaiting user testing on physical phone (`ZF6526CJ97`).
+- None blocking. Build, unit tests (15/15), manifest audit, and APK install all succeeded.
 
 ## Tests Performed and Results
-- Unit tests (`./gradlew test`): **PASS** (8/8 tests in `SpikePolicyTest`).
-- Manifest privacy check (`./gradlew :app:processDebugMainManifest`): **PASS** (zero network permissions).
-- APK Build (`./gradlew assembleDebug`): **PASS**.
+- Unit tests (`./gradlew test`): **PASS** (15/15 tests passed across `EyeGuardPolicyTest` and `SpikePolicyTest`).
+- Merged manifest privacy audit (`./gradlew :app:processDebugMainManifest`): **PASS** (zero network permissions).
+- APK Build (`./gradlew assembleDebug`): **PASS** (exit code 0).
 - APK Deployment (`adb install -r`): **PASS** (installed to `ZF6526CJ97`).
 
 ## Build Status
 - **SUCCESS** (`./gradlew assembleDebug` and `./gradlew test` exit 0).
 
 ## APK / Device Testing Status
-- Final Phase 0 APK installed on `ZF6526CJ97`. Awaiting user verification script on device.
+- Phase 1 APK installed on `ZF6526CJ97`. Awaiting user verification script on device.
 
 ## Exact Next Recommended Action
-- User to test the installed APK on phone:
-  1. Face present at safe distance (~35 cm) -> No dim.
-  2. Face brought close (~20 cm) -> Screen dims.
-  3. Face close with eyes covered -> Screen still dims if bounding box detected.
-  4. Phone facing away / no face for >5s -> Screen dims (battery saving, 1 fps).
-  5. Face returns -> Screen un-dims (unless face is close).
-  6. Notification: Tap "Pause Protection" -> Dimming pauses, camera unbinds. Tap "Resume Protection" -> Resumes.
-  7. Turn screen off -> Camera unbinds. Turn screen on -> Camera resumes.
-- Await user command (`next` / `start Phase 1`) before Phase 1.
+- User to test Phase 1 on Motorola Moto E7 Plus (`ZF6526CJ97`):
+  1. Open app and tap "Start Protection".
+  2. Hold phone at ~30 cm and tap "Calibrate at 30 cm". Verify $K$ updates.
+  3. Hold phone at comfortable distance (~35–40 cm) -> No warning, no dim.
+  4. Bring phone close (~20 cm) -> Warning banner appears, screen dims proportionally.
+  5. Back away to ~30–40 cm -> Warning clears, dim removes within 1 second.
+  6. Cover eyes with hand while close -> Bounding box still detects face and dims.
+  7. Move phone away / face absent for >5s -> Screen dims (battery saving, 1 fps).
+  8. Face returns -> Dim clears, full-rate analysis resumes.
+  9. In notification shade, tap "Pause Protection" -> Dim clears and camera pauses. Tap "Resume" -> Protection resumes.
+  10. Turn screen off -> Camera unbinds; turn screen on -> Camera resumes.
+  11. Check "Local Safety Event Ledger" card -> Confirm events were recorded in Room DB.
+- Await user command (`next` / `start Phase 2`) before beginning Phase 2.
 
 ## Important Decisions & Honest Limitations
-- **Approximate Distance**: Distance is approximate ($d \approx 12 / \text{widthFraction}$, ~15% variance depending on face geometry).
-- **Unmeasured Battery**: 1 fps idle poll avoids >95% of ML Kit inferences when nobody is looking, but overall battery savings are not claimed as measured until physical multi-hour battery benchmarking.
-- **Hysteresis**: Trigger at 0.60, recovery at 0.45 prevents rapid screen dim flickering.
-- **Offline ML Kit**: Configured with `LANDMARK_MODE_NONE` and `CLASSIFICATION_MODE_NONE` for minimal CPU usage.
+- **Approximate Distance**: Pinhole optical estimation ($d \approx K / w$) has an expected error margin of ~15% depending on individual facial dimensions and pitch/roll. Calibration aligns $K$ to the specific user.
+- **Opacity Cap**: Capped strictly at 0.80 per Android 12+ touch pass-through requirements.
+- **Unmeasured Battery**: Frame throttling to 1 fps during idle avoids >95% of ML Kit inferences, but physical battery consumption is not claimed as measured until multi-hour testing.

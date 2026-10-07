@@ -2,6 +2,18 @@
 
 All notable changes to the VisionGuard project will be documented in this file.
 
+## [Phase 1 - Eye Guard] - 2026-10-07
+### Added
+- Pure Kotlin `Clock` abstraction and `FaceObservation` domain model in `com.visionguard.policy`.
+- `EyeGuardPolicy` supporting pinhole distance estimation, calibration ($K = d_{\text{cal}} \times w_{\text{cal}}$), Exponential Moving Average (EMA) smoothing ($\alpha = 0.35$), $N = 5$ consecutive-frame confirmation, hysteresis, and closeness-proportional dimming opacity capped at 0.80.
+- Local offline Room database infrastructure (`AppDatabase`, `EyeGuardEventEntity`, `EyeGuardEventDao`) in `com.visionguard.data` configured with KSP (`2.0.20-1.0.25`).
+- Proportional overlay dimming in `SpikeOverlayManager` scaling opacity from 0.45 to 0.80 while preserving touch pass-through.
+- Calibration UI allowing users to calibrate viewing distance at ~30 cm reading distance.
+- Adjustable Eye Guard threshold setting chips (20 cm default, 25 cm, 30 cm).
+- Prominent user-facing warning banner and rate-limited notification alerts when phone is held too close.
+- Local Safety Event Ledger displaying recent safety events from the Room database.
+- Comprehensive JVM unit test suite (`EyeGuardPolicyTest`) with 7 tests verifying calibration, EMA, N-frame confirmation, hysteresis, and recovery timing (total 15 unit tests passing).
+
 ## [Phase 0 Final Fixes] - 2026-10-07
 ### Changed
 - Centralized policy engine into `ProtectionPolicy` with explicit state machine (`NORMAL_DISTANCE`, `TOO_CLOSE`, `NO_FACE_GRACE_PERIOD`, `NO_FACE_DIMMED`).

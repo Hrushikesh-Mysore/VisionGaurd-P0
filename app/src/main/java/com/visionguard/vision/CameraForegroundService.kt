@@ -1,6 +1,5 @@
-// Foreground service hosting the CameraX lifecycle and offline ML Kit face detection.
-// Integrates ProtectionPolicy state machine for ~20 cm proximity dimming, notification pause/resume,
-// screen on/off power gating, and 5s no-face idle dimming with 1 fps low-power polling.
+// Foreground service hosting the CameraX lifecycle, offline ML Kit face detection,
+// and EyeGuardPolicy state machine with Room event logging and proportional dimming.
 package com.visionguard.vision
 
 import android.app.Notification
@@ -31,7 +30,9 @@ import com.google.mlkit.vision.face.FaceDetector
 import com.google.mlkit.vision.face.FaceDetectorOptions
 import com.visionguard.R
 import com.visionguard.VisionGuardApp
-import com.visionguard.policy.ProtectionPolicy
+import com.visionguard.policy.EyeGuardPolicy
+import com.visionguard.policy.FaceObservation
+import com.visionguard.policy.ProtectionState
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
@@ -41,10 +42,12 @@ class CameraForegroundService : LifecycleService() {
     private var cameraProvider: ProcessCameraProvider? = null
     private lateinit var cameraExecutor: ExecutorService
     private lateinit var faceDetector: FaceDetector
-    private val protectionPolicy = ProtectionPolicy()
+    private val eyeGuardPolicy = EyeGuardPolicy()
 
     private var isPaused: Boolean = false
     private var lastAnalyzedFrameTimeMs: Long = 0L
+    private var previousProtectionState: ProtectionState = ProtectionState.NO_FACE_GRACE_PERIOD
+    private var lastWarningNotificationTimeMs: Long = 0L
 
     private val screenStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -56,7 +59,7 @@ class CameraForegroundService : LifecycleService() {
                 Intent.ACTION_SCREEN_ON -> {
                     Log.d(tag, "Screen ON detected: rebinding camera analysis")
                     if (!isPaused) {
-                        protectionPolicy.reset(SystemClock.elapsedRealtime())
+                        eyeGuardPolicy.reset(SystemClock.elapsedRealtime())
                         bindCameraAnalysis()
                     }
                 }
@@ -85,8 +88,9 @@ class CameraForegroundService : LifecycleService() {
         createNotificationChannel()
         startAsForeground()
 
-        VisionGuardApp.instance.container.updateServiceRunning(true)
-        protectionPolicy.reset(SystemClock.elapsedRealtime())
+        val container = VisionGuardApp.instance.container
+        container.updateServiceRunning(true)
+        eyeGuardPolicy.reset(SystemClock.elapsedRealtime())
         bindCameraAnalysis()
     }
 
@@ -111,9 +115,11 @@ class CameraForegroundService : LifecycleService() {
         if (!isPaused) {
             isPaused = true
             Log.d(tag, "Protection paused by user")
+            unbindCameraAnalysis()
             VisionGuardApp.instance.container.overlayManager.hideOverlay()
-            protectionPolicy.reset(SystemClock.elapsedRealtime())
+            eyeGuardPolicy.reset(SystemClock.elapsedRealtime())
             VisionGuardApp.instance.container.updatePaused(true)
+            VisionGuardApp.instance.container.logEvent("PAUSED", null, "Protection paused by user")
             updateNotification()
         }
     }
@@ -122,8 +128,9 @@ class CameraForegroundService : LifecycleService() {
         if (isPaused) {
             isPaused = false
             Log.d(tag, "Protection resumed by user")
-            protectionPolicy.reset(SystemClock.elapsedRealtime())
+            eyeGuardPolicy.reset(SystemClock.elapsedRealtime())
             VisionGuardApp.instance.container.updatePaused(false)
+            VisionGuardApp.instance.container.logEvent("RESUMED", null, "Protection resumed by user")
             updateNotification()
             bindCameraAnalysis()
         }
@@ -143,17 +150,17 @@ class CameraForegroundService : LifecycleService() {
         }
     }
 
-    private fun buildNotification(paused: Boolean): Notification {
-        val title = if (paused) {
-            getString(R.string.camera_service_notification_title_paused)
-        } else {
-            getString(R.string.camera_service_notification_title)
+    private fun buildNotification(paused: Boolean, isWarning: Boolean = false): Notification {
+        val title = when {
+            paused -> getString(R.string.camera_service_notification_title_paused)
+            isWarning -> "VisionGuard: Screen Too Close!"
+            else -> getString(R.string.camera_service_notification_title)
         }
 
-        val text = if (paused) {
-            getString(R.string.camera_service_notification_desc_paused)
-        } else {
-            getString(R.string.camera_service_notification_desc)
+        val text = when {
+            paused -> getString(R.string.camera_service_notification_desc_paused)
+            isWarning -> "Phone is held too close. Move it back to clear dimming."
+            else -> getString(R.string.camera_service_notification_desc)
         }
 
         val actionText = if (paused) {
@@ -199,8 +206,8 @@ class CameraForegroundService : LifecycleService() {
         }
     }
 
-    private fun updateNotification() {
-        val notification = buildNotification(isPaused)
+    private fun updateNotification(isWarning: Boolean = false) {
+        val notification = buildNotification(isPaused, isWarning)
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(NOTIFICATION_ID, notification)
     }
@@ -281,26 +288,53 @@ class CameraForegroundService : LifecycleService() {
 
             faceDetector.process(inputImage)
                 .addOnSuccessListener { faces ->
-                    val faceDetected = faces.isNotEmpty()
                     val faceCount = faces.size
                     val largestFace = faces.maxByOrNull { it.boundingBox.width() }
                     val widthFraction = if (largestFace != null) {
-                        ProtectionPolicy.calculateWidthFraction(largestFace.boundingBox.width(), uprightWidth)
+                        EyeGuardPolicy.calculateWidthFraction(largestFace.boundingBox.width(), uprightWidth)
                     } else {
                         0f
                     }
+                    val yaw = largestFace?.headEulerAngleY ?: 0f
 
-                    // Centralized policy evaluation (proximity hysteresis + 5s no-face dimming timeout)
-                    val decision = protectionPolicy.evaluate(faceDetected, widthFraction, SystemClock.elapsedRealtime())
+                    val observation = FaceObservation(
+                        widthFraction = widthFraction,
+                        yaw = yaw,
+                        count = faceCount,
+                        timestampMs = now
+                    )
 
-                    Log.d(tag, "Policy: state=${decision.state}, dim=${decision.shouldDim}, powerSave=${decision.isPowerSaving}, widthFraction=%.3f".format(widthFraction))
+                    // Synchronize user settings (calibration K and target threshold)
+                    val container = VisionGuardApp.instance.container
+                    eyeGuardPolicy.calibrationK = container.calibrationK.value
+                    eyeGuardPolicy.tooCloseThresholdCm = container.targetThresholdCm.value
 
-                    VisionGuardApp.instance.container.updatePolicyDecision(decision, faceCount, widthFraction)
+                    // Evaluate policy state machine
+                    val decision = eyeGuardPolicy.evaluate(observation, now)
 
+                    // Room event logging on state transitions
+                    if (previousProtectionState != ProtectionState.TOO_CLOSE && decision.state == ProtectionState.TOO_CLOSE) {
+                        container.logEvent("TOO_CLOSE", decision.smoothedDistanceCm, "Screen too close (< %.0f cm)".format(container.targetThresholdCm.value))
+                        // Update notification without spam
+                        if (now - lastWarningNotificationTimeMs > 4000L) {
+                            lastWarningNotificationTimeMs = now
+                            updateNotification(isWarning = true)
+                        }
+                    } else if (previousProtectionState == ProtectionState.TOO_CLOSE && decision.state == ProtectionState.NORMAL_DISTANCE) {
+                        container.logEvent("RECOVERED", decision.smoothedDistanceCm, "Safe viewing distance restored")
+                        updateNotification(isWarning = false)
+                    } else if (previousProtectionState != ProtectionState.NO_FACE_DIMMED && decision.state == ProtectionState.NO_FACE_DIMMED) {
+                        container.logEvent("NO_FACE_POWER_SAVING", null, "No face for >5s; dimmed at 1 fps idle")
+                    }
+                    previousProtectionState = decision.state
+
+                    container.updateEyeGuardDecision(decision, faceCount, widthFraction)
+
+                    // Proportional dimming overlay control
                     if (!isPaused && decision.shouldDim) {
-                        VisionGuardApp.instance.container.overlayManager.showOverlay()
+                        container.overlayManager.showOverlay(decision.dimOpacity)
                     } else {
-                        VisionGuardApp.instance.container.overlayManager.hideOverlay()
+                        container.overlayManager.hideOverlay()
                     }
                 }
                 .addOnFailureListener { e ->

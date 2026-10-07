@@ -1,6 +1,6 @@
-// Main launcher activity hosting Phase 0 spike verification screen.
-// Provides permission controls, service lifecycle triggers, notification pause/resume awareness,
-// and live proximity metrics distinguishing between no-face, normal, and too-close states.
+// Main launcher activity hosting VisionGuard Phase 1 Eye Guard screen.
+// Provides permission controls, calibration workflow, distance threshold settings,
+// Room event history inspection, and live proximity metrics HUD.
 package com.visionguard.ui
 
 import android.Manifest
@@ -35,9 +35,13 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.visionguard.VisionGuardApp
-import com.visionguard.policy.ProtectionPolicy
+import com.visionguard.policy.EyeGuardPolicy
 import com.visionguard.policy.ProtectionState
 import com.visionguard.vision.CameraForegroundService
+import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
 
@@ -51,7 +55,7 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    SpikeHomeScreen()
+                    EyeGuardHomeScreen()
                 }
             }
         }
@@ -59,13 +63,18 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun SpikeHomeScreen() {
+fun EyeGuardHomeScreen() {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val container = VisionGuardApp.instance.container
+    val coroutineScope = rememberCoroutineScope()
 
     val metrics by container.spikeMetrics.collectAsState()
     val isOverlayShowing by container.overlayManager.isOverlayVisible.collectAsState()
+    val currentOverlayOpacity by container.overlayManager.currentOpacity.collectAsState()
+    val calibrationK by container.calibrationK.collectAsState()
+    val targetThresholdCm by container.targetThresholdCm.collectAsState()
+    val recentEvents by container.eventDao.getRecentEvents(10).collectAsState(initial = emptyList())
 
     var hasCameraPermission by remember {
         mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
@@ -117,15 +126,40 @@ fun SpikeHomeScreen() {
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(20.dp),
+            .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         Text(
-            text = "VisionGuard Spike (Phase 0)",
+            text = "VisionGuard Eye Guard",
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold
         )
+
+        // Prominent Warning Banner when too close
+        if (metrics.isTooClose) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Text(
+                        text = "⚠️ Screen Too Close!",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Phone is held closer than %.0f cm. Screen has dimmed proportionally. Hold phone further away to restore normal brightness."
+                            .format(targetThresholdCm),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                }
+            }
+        }
 
         // Status Card
         val statusContainerColor = when {
@@ -146,7 +180,7 @@ fun SpikeHomeScreen() {
                     text = when {
                         !metrics.isServiceRunning -> "Protection Stopped"
                         metrics.isPaused -> "Protection Paused"
-                        metrics.isTooClose -> "Too Close! (< 20 cm)"
+                        metrics.isTooClose -> "Eye Guard: Too Close! (< %.0f cm)".format(targetThresholdCm)
                         metrics.isNoFaceDimmed -> "No Face (>5s) - Screen Dimmed"
                         metrics.isPowerSaving -> "Protection Active (Power Saving)"
                         else -> "Protection Active"
@@ -159,9 +193,9 @@ fun SpikeHomeScreen() {
                     text = when {
                         !metrics.isServiceRunning -> "Tap Start to launch camera background monitor."
                         metrics.isPaused -> "Protection paused via notification or app. Proximity dimming is inactive."
-                        metrics.isNoFaceDimmed -> "No face seen for >5s. Screen dimmed and frame analysis throttled to 1 fps."
+                        metrics.isNoFaceDimmed -> "No face seen for >5s. Screen dimmed and analysis throttled to 1 fps."
                         metrics.isPowerSaving -> "No face seen for >5s. Frame analysis throttled to 1 fps to save battery."
-                        metrics.isCameraBound -> "Camera active. Monitoring face distance (~20 cm threshold)."
+                        metrics.isCameraBound -> "Camera active. Monitoring viewing distance (~%.0f cm threshold).".format(targetThresholdCm)
                         else -> "Camera paused (screen off or background gating)."
                     },
                     style = MaterialTheme.typography.bodyMedium
@@ -185,7 +219,7 @@ fun SpikeHomeScreen() {
             enabled = allPermissionsGranted || metrics.isServiceRunning,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(56.dp),
+                .height(52.dp),
             colors = ButtonDefaults.buttonColors(
                 containerColor = if (metrics.isServiceRunning) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
             ),
@@ -193,12 +227,12 @@ fun SpikeHomeScreen() {
         ) {
             Text(
                 text = if (metrics.isServiceRunning) "Stop Protection" else "Start Protection",
-                fontSize = 18.sp,
+                fontSize = 17.sp,
                 fontWeight = FontWeight.Bold
             )
         }
 
-        // In-App Pause / Resume Button (mirrors the notification control)
+        // In-App Pause / Resume Button
         if (metrics.isServiceRunning) {
             OutlinedButton(
                 onClick = {
@@ -213,7 +247,7 @@ fun SpikeHomeScreen() {
                 },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(48.dp)
+                    .height(46.dp)
             ) {
                 Text(
                     text = if (metrics.isPaused) "Resume Protection" else "Pause Protection (Temporary)"
@@ -221,7 +255,7 @@ fun SpikeHomeScreen() {
             }
         }
 
-        // Live Detection Metrics Card
+        // Calibration Card
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(16.dp)
@@ -231,7 +265,112 @@ fun SpikeHomeScreen() {
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text(
-                    text = "Live Detection Metrics",
+                    text = "Distance Calibration",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "Hold your phone at a comfortable reading distance (~30 cm) and tap Calibrate.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                HorizontalDivider()
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("Current Calibration K:", style = MaterialTheme.typography.bodyMedium)
+                    Text("%.2f".format(calibrationK), fontWeight = FontWeight.Bold)
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("Observed Face Width:", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        if (metrics.faceCount > 0) "%.3f".format(metrics.widthFraction) else "No face in view",
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = {
+                            if (metrics.widthFraction > 0.05f) {
+                                val newK = EyeGuardPolicy.calculateCalibratedK(30.0f, metrics.widthFraction)
+                                container.updateCalibrationK(newK)
+                            }
+                        },
+                        enabled = metrics.faceCount > 0 && metrics.widthFraction > 0.05f,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Calibrate at 30 cm")
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            container.updateCalibrationK(EyeGuardPolicy.DEFAULT_CALIBRATION_K)
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Reset (K=12.0)")
+                    }
+                }
+            }
+        }
+
+        // Distance Threshold Setting Card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "Eye Guard Trigger Threshold",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "Select when screen dimming activates (default ~20 cm).",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                HorizontalDivider()
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    listOf(20f, 25f, 30f).forEach { thresholdOption ->
+                        val isSelected = targetThresholdCm == thresholdOption
+                        FilterChip(
+                            selected = isSelected,
+                            onClick = { container.updateTargetThresholdCm(thresholdOption) },
+                            label = { Text("%.0f cm%s".format(thresholdOption, if (thresholdOption == 20f) " (Default)" else "")) }
+                        )
+                    }
+                }
+            }
+        }
+
+        // Live Detection Metrics Card (Debug HUD)
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "Live Detection Metrics (Debug HUD)",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
@@ -240,27 +379,28 @@ fun SpikeHomeScreen() {
                 MetricRow(label = "Faces Detected", value = "${metrics.faceCount}")
 
                 val widthFractionStr = if (metrics.faceCount > 0) {
-                    "%.3f (trigger: %.2f, recover: %.2f)".format(
-                        metrics.widthFraction,
-                        ProtectionPolicy.DEFAULT_TRIGGER_THRESHOLD_FRACTION,
-                        ProtectionPolicy.DEFAULT_RECOVERY_THRESHOLD_FRACTION
-                    )
+                    "Raw: %.3f | EMA: %.3f".format(metrics.widthFraction, metrics.smoothedWidthFraction)
                 } else {
                     "0.000 (No face)"
                 }
                 MetricRow(label = "Width Fraction", value = widthFractionStr)
 
                 val distanceEst = if (metrics.faceCount > 0) {
-                    val d = metrics.estimatedDistanceCm ?: ProtectionPolicy.estimateDistanceCm(metrics.widthFraction)
-                    if (d != null) "~%.0f cm (approximate)".format(d) else "Unknown"
+                    val d = metrics.estimatedDistanceCm
+                    if (d != null) "~%.1f cm (approximate)".format(d) else "Unknown"
                 } else {
                     "None (no face in view)"
                 }
                 MetricRow(label = "Est. Distance", value = distanceEst)
 
+                MetricRow(
+                    label = "Close Frame Count",
+                    value = "${metrics.consecutiveCloseFrames} / ${EyeGuardPolicy.DEFAULT_CONSECUTIVE_FRAMES}"
+                )
+
                 val stateLabel = when (metrics.protectionState) {
                     ProtectionState.NORMAL_DISTANCE -> "NORMAL DISTANCE"
-                    ProtectionState.TOO_CLOSE -> "TOO CLOSE (≤ 20 cm)"
+                    ProtectionState.TOO_CLOSE -> "TOO CLOSE (≤ %.0f cm)".format(targetThresholdCm)
                     ProtectionState.NO_FACE_GRACE_PERIOD -> "NO FACE DETECTED (Grace Period)"
                     ProtectionState.NO_FACE_DIMMED -> "NO FACE DETECTED (Dimmed / 1 fps)"
                 }
@@ -280,9 +420,77 @@ fun SpikeHomeScreen() {
 
                 MetricRow(
                     label = "Dim Overlay",
-                    value = if (isOverlayShowing) "ACTIVE (alpha 0.5)" else "HIDDEN",
+                    value = if (isOverlayShowing) "ACTIVE (opacity: %.2f)".format(currentOverlayOpacity) else "HIDDEN",
                     highlight = isOverlayShowing
                 )
+            }
+        }
+
+        // Recent Safety Events Card (Room DB)
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Local Safety Event Ledger",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    TextButton(
+                        onClick = {
+                            coroutineScope.launch {
+                                container.eventDao.clearAll()
+                            }
+                        }
+                    ) {
+                        Text("Clear", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                HorizontalDivider()
+
+                if (recentEvents.isEmpty()) {
+                    Text(
+                        text = "No events logged yet. Proximity triggers, recoveries, and calibrations will appear here.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    val dateFormat = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
+                    recentEvents.take(5).forEach { event ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column {
+                                Text(
+                                    text = event.eventType,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 13.sp,
+                                    color = if (event.eventType == "TOO_CLOSE") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = event.detail,
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Text(
+                                text = dateFormat.format(Date(event.timestamp)),
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                        }
+                    }
+                }
             }
         }
 
@@ -333,33 +541,40 @@ fun SpikeHomeScreen() {
                     onOpenSettings = { openOverlaySettings(context) }
                 )
 
-                PermissionItem(
-                    name = "Notifications",
-                    description = "Maintains persistent camera foreground service notification.",
-                    isGranted = hasNotificationPermission,
-                    onRequest = {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                        }
-                    },
-                    onOpenSettings = { openAppSettings(context) }
-                )
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    PermissionItem(
+                        name = "Notifications",
+                        description = "Required for persistent foreground service and pause controls.",
+                        isGranted = hasNotificationPermission,
+                        onRequest = { notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) },
+                        onOpenSettings = { openAppSettings(context) }
+                    )
+                }
             }
         }
+
+        Spacer(modifier = Modifier.height(16.dp))
     }
 }
 
 @Composable
 fun MetricRow(label: String, value: String, highlight: Boolean = false) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(text = label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
         Text(
             text = value,
             style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.SemiBold,
+            fontWeight = if (highlight) FontWeight.Bold else FontWeight.Normal,
             color = if (highlight) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
         )
     }
@@ -373,52 +588,28 @@ fun PermissionItem(
     onRequest: () -> Unit,
     onOpenSettings: () -> Unit
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(
-                color = if (isGranted) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.2f),
-                shape = RoundedCornerShape(8.dp)
-            )
-            .padding(10.dp)
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = name,
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.SemiBold
-            )
-            Text(
-                text = if (isGranted) "GRANTED" else "REQUIRED",
-                color = if (isGranted) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error,
-                fontWeight = FontWeight.Bold,
-                fontSize = 12.sp
-            )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = name, fontWeight = FontWeight.SemiBold)
+            Text(text = description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Text(
-            text = description,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        if (!isGranted) {
-            Spacer(modifier = Modifier.height(6.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = onRequest,
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                ) {
-                    Text(text = "Grant", fontSize = 12.sp)
-                }
-                OutlinedButton(
-                    onClick = onOpenSettings,
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                ) {
-                    Text(text = "Settings", fontSize = 12.sp)
-                }
+        Spacer(modifier = Modifier.width(8.dp))
+        if (isGranted) {
+            Text(
+                text = "Granted",
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Bold
+            )
+        } else {
+            Button(
+                onClick = onRequest,
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+            ) {
+                Text(text = "Grant", fontSize = 12.sp)
             }
         }
     }
