@@ -1,15 +1,22 @@
 // Manages system overlay window for visual warning display across applications.
-// Supports proportional Eye Guard dimming and frosted Privacy Guard shield with blur-behind on API 31+.
+// Supports proportional Eye Guard dimming with explanatory on-screen warnings and frosted Privacy Guard shields.
 package com.visionguard.overlay
 
 import android.content.Context
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.provider.Settings
+import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.TextView
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -23,7 +30,8 @@ enum class OverlayMode {
 class SpikeOverlayManager(private val context: Context) {
 
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-    private var overlayView: View? = null
+    private var overlayContainer: FrameLayout? = null
+    private var dimLayer: View? = null
 
     private val _isOverlayVisible = MutableStateFlow(false)
     val isOverlayVisible: StateFlow<Boolean> = _isOverlayVisible.asStateFlow()
@@ -36,6 +44,14 @@ class SpikeOverlayManager(private val context: Context) {
 
     fun canDrawOverlays(): Boolean {
         return Settings.canDrawOverlays(context)
+    }
+
+    private fun dpToPx(dp: Int): Int {
+        return TypedValue.applyDimension(
+            TypedValue.COMPLEX_UNIT_DIP,
+            dp.toFloat(),
+            context.resources.displayMetrics
+        ).toInt()
     }
 
     /**
@@ -55,7 +71,7 @@ class SpikeOverlayManager(private val context: Context) {
     }
 
     /**
-     * Displays a frosted / dark privacy shield overlay.
+     * Displays a frosted / dark privacy shield overlay with an explanatory warning banner.
      * On API 31+, applies FLAG_BLUR_BEHIND with blurBehindRadius when cross-window blur is enabled.
      *
      * TRADE-OFF EXPLANATION:
@@ -69,20 +85,45 @@ class SpikeOverlayManager(private val context: Context) {
     fun showPrivacyOverlay() {
         if (!canDrawOverlays()) return
 
-        // If already showing privacy shield, nothing to change
-        if (overlayView != null && _overlayMode.value == OverlayMode.PRIVACY_GUARD_SHIELD) {
+        if (overlayContainer != null && _overlayMode.value == OverlayMode.PRIVACY_GUARD_SHIELD) {
             return
         }
 
-        // Clean up previous overlay if it was in another mode
-        if (overlayView != null) {
+        if (overlayContainer != null) {
             removeCurrentView()
         }
 
-        val frostedAlpha = (MAX_ALPHA * 255).toInt() // 80% opacity to preserve touch pass-through
-        val view = View(context).apply {
-            setBackgroundColor(Color.argb(frostedAlpha, 15, 23, 42)) // Frosted dark navy slate
+        val frostedAlpha = (MAX_ALPHA * 255).toInt()
+        val container = FrameLayout(context)
+
+        // Frosted background layer
+        val backgroundView = View(context).apply {
+            setBackgroundColor(Color.argb(frostedAlpha, 15, 23, 42))
         }
+        container.addView(
+            backgroundView,
+            FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        )
+        dimLayer = backgroundView
+
+        // Clear explanatory banner for privacy warning
+        val bannerCard = createExplanationBanner(
+            title = "🛡️ Privacy Guard Alert",
+            titleColor = Color.parseColor("#EF4444"), // Red
+            whatText = "A secondary viewer is looking at your screen.",
+            whyText = "VisionGuard shields your screen to protect your visual privacy.",
+            actionText = "Dismiss via the notification shade or in-app button."
+        )
+        val bannerParams = FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            topMargin = dpToPx(48)
+            leftMargin = dpToPx(16)
+            rightMargin = dpToPx(16)
+        }
+        container.addView(bannerCard, bannerParams)
 
         val layoutParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
@@ -95,7 +136,6 @@ class SpikeOverlayManager(private val context: Context) {
         ).apply {
             gravity = Gravity.TOP or Gravity.START
 
-            // API 31+ hardware cross-window blur support
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 try {
                     if (windowManager.isCrossWindowBlurEnabled) {
@@ -103,14 +143,14 @@ class SpikeOverlayManager(private val context: Context) {
                         blurBehindRadius = 45
                     }
                 } catch (e: Exception) {
-                    // Fall back to dark frosted color without blur
+                    // Fall back safely without hardware blur
                 }
             }
         }
 
         try {
-            windowManager.addView(view, layoutParams)
-            overlayView = view
+            windowManager.addView(container, layoutParams)
+            overlayContainer = container
             _isOverlayVisible.value = true
             _overlayMode.value = OverlayMode.PRIVACY_GUARD_SHIELD
             _currentOpacity.value = MAX_ALPHA
@@ -119,30 +159,60 @@ class SpikeOverlayManager(private val context: Context) {
         }
     }
 
+    /**
+     * Displays proportional Eye Guard dimming WITH a clear, friendly on-screen explanation warning.
+     * Tells the user WHAT happened, WHY the screen dimmed, and WHAT TO DO, while remaining click-through.
+     */
     @Synchronized
     fun showOverlay(opacity: Float = DEFAULT_ALPHA) {
         if (!canDrawOverlays()) return
 
-        // If privacy shield is active, it wins over eye guard dimming
         if (_overlayMode.value == OverlayMode.PRIVACY_GUARD_SHIELD) {
             return
         }
 
         val clampedOpacity = opacity.coerceIn(0.1f, MAX_ALPHA)
 
-        if (overlayView != null && _overlayMode.value == OverlayMode.EYE_GUARD_DIM) {
+        if (overlayContainer != null && _overlayMode.value == OverlayMode.EYE_GUARD_DIM) {
             updateOpacity(clampedOpacity)
             return
         }
 
-        if (overlayView != null) {
+        if (overlayContainer != null) {
             removeCurrentView()
         }
 
         val alphaInt = (clampedOpacity * 255).toInt()
-        val view = View(context).apply {
+        val container = FrameLayout(context)
+
+        // Semi-transparent black dim layer
+        val backgroundView = View(context).apply {
             setBackgroundColor(Color.argb(alphaInt, 0, 0, 0))
         }
+        container.addView(
+            backgroundView,
+            FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        )
+        dimLayer = backgroundView
+
+        // Friendly on-screen explanation banner: WHAT, WHY, and WHAT TO DO
+        val bannerCard = createExplanationBanner(
+            title = "⚠️ Screen Too Close",
+            titleColor = Color.parseColor("#F59E0B"), // Amber
+            whatText = "You're too close to the screen.",
+            whyText = "VisionGuard dims the screen to encourage a safer viewing distance.",
+            actionText = "Move the phone farther away to clear dimming."
+        )
+        val bannerParams = FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            topMargin = dpToPx(48)
+            leftMargin = dpToPx(16)
+            rightMargin = dpToPx(16)
+        }
+        container.addView(bannerCard, bannerParams)
 
         val layoutParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
@@ -157,13 +227,51 @@ class SpikeOverlayManager(private val context: Context) {
         }
 
         try {
-            windowManager.addView(view, layoutParams)
-            overlayView = view
+            windowManager.addView(container, layoutParams)
+            overlayContainer = container
             _isOverlayVisible.value = true
             _overlayMode.value = OverlayMode.EYE_GUARD_DIM
             _currentOpacity.value = clampedOpacity
         } catch (e: Exception) {
             e.printStackTrace()
+        }
+    }
+
+    private fun createExplanationBanner(
+        title: String,
+        titleColor: Int,
+        whatText: String,
+        whyText: String,
+        actionText: String
+    ): LinearLayout {
+        return LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpToPx(16), dpToPx(12), dpToPx(16), dpToPx(12))
+
+            val bg = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dpToPx(14).toFloat()
+                setColor(Color.argb(235, 15, 23, 42)) // Frosted dark navy slate
+                setStroke(dpToPx(1), titleColor)
+            }
+            background = bg
+
+            val titleView = TextView(context).apply {
+                text = title
+                setTextColor(titleColor)
+                textSize = 15f
+                setTypeface(null, Typeface.BOLD)
+            }
+            addView(titleView)
+
+            val bodyView = TextView(context).apply {
+                text = "$whatText\n$whyText\n💡 $actionText"
+                setTextColor(Color.parseColor("#F8FAFC"))
+                textSize = 12.5f
+                setLineSpacing(dpToPx(2).toFloat(), 1.15f)
+                setPadding(0, dpToPx(4), 0, 0)
+            }
+            addView(bodyView)
         }
     }
 
@@ -173,7 +281,7 @@ class SpikeOverlayManager(private val context: Context) {
 
         val clampedOpacity = opacity.coerceIn(0.1f, MAX_ALPHA)
         _currentOpacity.value = clampedOpacity
-        overlayView?.let { view ->
+        dimLayer?.let { view ->
             val alphaInt = (clampedOpacity * 255).toInt()
             view.setBackgroundColor(Color.argb(alphaInt, 0, 0, 0))
         } ?: run {
@@ -189,13 +297,14 @@ class SpikeOverlayManager(private val context: Context) {
     }
 
     private fun removeCurrentView() {
-        val view = overlayView ?: return
+        val container = overlayContainer ?: return
         try {
-            windowManager.removeView(view)
+            windowManager.removeView(container)
         } catch (e: Exception) {
             e.printStackTrace()
         } finally {
-            overlayView = null
+            overlayContainer = null
+            dimLayer = null
             _isOverlayVisible.value = false
             _overlayMode.value = OverlayMode.NONE
             _currentOpacity.value = 0.0f
@@ -204,7 +313,7 @@ class SpikeOverlayManager(private val context: Context) {
 
     @Synchronized
     fun toggleOverlay() {
-        if (overlayView != null) {
+        if (overlayContainer != null) {
             hideOverlay()
         } else {
             showOverlay(DEFAULT_ALPHA)

@@ -1,5 +1,5 @@
 // Main launcher activity hosting VisionGuard Protection and Smart Dashboard screens.
-// Provides state-based bottom bar navigation, permission controls, and live multi-face detection metrics HUD.
+// Provides state-based bottom bar navigation, permission controls, camera consent dialogs, and profile security.
 package com.visionguard.ui
 
 import android.Manifest
@@ -18,6 +18,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -25,6 +26,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -34,7 +37,9 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.visionguard.VisionGuardApp
 import com.visionguard.overlay.OverlayMode
 import com.visionguard.policy.EyeGuardPolicy
+import com.visionguard.policy.PinVerificationResult
 import com.visionguard.policy.ProtectionState
+import com.visionguard.policy.UserProfile
 import com.visionguard.vision.CameraForegroundService
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -99,6 +104,8 @@ fun VisionGuardHomeScreen() {
     val coroutineScope = rememberCoroutineScope()
 
     val metrics by container.spikeMetrics.collectAsState()
+    val activeProfile by container.activeProfile.collectAsState()
+    val hasCameraConsent by container.hasCameraConsent.collectAsState()
     val isOverlayShowing by container.overlayManager.isOverlayVisible.collectAsState()
     val overlayMode by container.overlayManager.overlayMode.collectAsState()
     val currentOverlayOpacity by container.overlayManager.currentOpacity.collectAsState()
@@ -125,6 +132,11 @@ fun VisionGuardHomeScreen() {
             }
         )
     }
+
+    var showCameraConsentModal by remember { mutableStateOf(false) }
+    var showPinPromptToStop by remember { mutableStateOf(false) }
+    var enteredPinToStop by remember { mutableStateOf("") }
+    var stopPinError by remember { mutableStateOf<String?>(null) }
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -157,6 +169,18 @@ fun VisionGuardHomeScreen() {
 
     val allPermissionsGranted = hasCameraPermission && hasOverlayPermission && hasNotificationPermission
 
+    fun executeStartProtection() {
+        val serviceIntent = Intent(context, CameraForegroundService::class.java)
+        ContextCompat.startForegroundService(context, serviceIntent)
+    }
+
+    fun executeStopProtection() {
+        val stopIntent = Intent(context, CameraForegroundService::class.java).apply {
+            action = CameraForegroundService.ACTION_STOP_SERVICE
+        }
+        context.startService(stopIntent)
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -170,6 +194,28 @@ fun VisionGuardHomeScreen() {
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold
         )
+
+        // Child Profile Notice Banner
+        if (activeProfile == UserProfile.CHILD) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("👶", fontSize = 20.sp)
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = "Child Profile Active. Protection controls and settings are locked by Parent PIN.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                }
+            }
+        }
 
         // Prominent Privacy Alert Banner (Takes Priority)
         if (metrics.isPrivacyAlertActive) {
@@ -280,13 +326,18 @@ fun VisionGuardHomeScreen() {
         Button(
             onClick = {
                 if (!metrics.isServiceRunning) {
-                    val serviceIntent = Intent(context, CameraForegroundService::class.java)
-                    ContextCompat.startForegroundService(context, serviceIntent)
-                } else {
-                    val stopIntent = Intent(context, CameraForegroundService::class.java).apply {
-                        action = CameraForegroundService.ACTION_STOP_SERVICE
+                    if (!hasCameraConsent) {
+                        showCameraConsentModal = true
+                    } else {
+                        executeStartProtection()
                     }
-                    context.startService(stopIntent)
+                } else {
+                    // If in Child profile, stopping protection requires Parent PIN
+                    if (activeProfile == UserProfile.CHILD) {
+                        showPinPromptToStop = true
+                    } else {
+                        executeStopProtection()
+                    }
                 }
             },
             enabled = allPermissionsGranted || metrics.isServiceRunning,
@@ -305,8 +356,8 @@ fun VisionGuardHomeScreen() {
             )
         }
 
-        // In-App Pause / Resume Button
-        if (metrics.isServiceRunning) {
+        // In-App Pause / Resume Button (Hidden for Child profile)
+        if (metrics.isServiceRunning && activeProfile == UserProfile.PARENT) {
             OutlinedButton(
                 onClick = {
                     val intent = Intent(context, CameraForegroundService::class.java).apply {
@@ -328,7 +379,7 @@ fun VisionGuardHomeScreen() {
             }
         }
 
-        // Privacy Guard Settings Card (Phase 2 Toggle)
+        // Privacy Guard Settings Card
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(16.dp)
@@ -349,14 +400,15 @@ fun VisionGuardHomeScreen() {
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = "Shields screen when a secondary viewer looks over your shoulder.",
+                            text = if (activeProfile == UserProfile.CHILD) "Enforced by Parent for Child safety." else "Shields screen when a secondary viewer looks over your shoulder.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                     Switch(
                         checked = isPrivacyGuardEnabled,
-                        onCheckedChange = { container.setPrivacyGuardEnabled(it) }
+                        onCheckedChange = { container.setPrivacyGuardEnabled(it) },
+                        enabled = activeProfile == UserProfile.PARENT // Locked for Child
                     )
                 }
 
@@ -370,7 +422,7 @@ fun VisionGuardHomeScreen() {
             }
         }
 
-        // Distance Calibration Card
+        // Distance Calibration Card (Disabled for Child)
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(16.dp)
@@ -385,7 +437,7 @@ fun VisionGuardHomeScreen() {
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "Hold your phone at a comfortable reading distance (~30 cm) and tap Calibrate.",
+                    text = if (activeProfile == UserProfile.CHILD) "Calibration managed by Parent." else "Hold your phone at a comfortable reading distance (~30 cm) and tap Calibrate.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -409,30 +461,32 @@ fun VisionGuardHomeScreen() {
                     )
                 }
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Button(
-                        onClick = {
-                            if (metrics.widthFraction > 0.05f) {
-                                val newK = EyeGuardPolicy.calculateCalibratedK(30.0f, metrics.widthFraction)
-                                container.updateCalibrationK(newK)
-                            }
-                        },
-                        enabled = metrics.faceCount > 0 && metrics.widthFraction > 0.05f,
-                        modifier = Modifier.weight(1f)
+                if (activeProfile == UserProfile.PARENT) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text("Calibrate at 30 cm")
-                    }
+                        Button(
+                            onClick = {
+                                if (metrics.widthFraction > 0.05f) {
+                                    val newK = EyeGuardPolicy.calculateCalibratedK(30.0f, metrics.widthFraction)
+                                    container.updateCalibrationK(newK)
+                                }
+                            },
+                            enabled = metrics.faceCount > 0 && metrics.widthFraction > 0.05f,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Calibrate at 30 cm")
+                        }
 
-                    OutlinedButton(
-                        onClick = {
-                            container.updateCalibrationK(EyeGuardPolicy.DEFAULT_CALIBRATION_K)
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text("Reset (K=12.0)")
+                        OutlinedButton(
+                            onClick = {
+                                container.updateCalibrationK(EyeGuardPolicy.DEFAULT_CALIBRATION_K)
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Reset (K=12.0)")
+                        }
                     }
                 }
             }
@@ -453,7 +507,7 @@ fun VisionGuardHomeScreen() {
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "Select when screen dimming activates (default ~20 cm).",
+                    text = if (activeProfile == UserProfile.CHILD) "Locked at 25 cm for Child profile by Parent." else "Select when screen dimming activates (default ~20 cm).",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -463,13 +517,22 @@ fun VisionGuardHomeScreen() {
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    listOf(20f, 25f, 30f).forEach { thresholdOption ->
-                        val isSelected = targetThresholdCm == thresholdOption
+                    if (activeProfile == UserProfile.CHILD) {
                         FilterChip(
-                            selected = isSelected,
-                            onClick = { container.updateTargetThresholdCm(thresholdOption) },
-                            label = { Text("%.0f cm%s".format(thresholdOption, if (thresholdOption == 20f) " (Default)" else "")) }
+                            selected = true,
+                            onClick = { /* Locked for child */ },
+                            label = { Text("25 cm (Parent Lock)") },
+                            enabled = false
                         )
+                    } else {
+                        listOf(20f, 25f, 30f).forEach { thresholdOption ->
+                            val isSelected = targetThresholdCm == thresholdOption
+                            FilterChip(
+                                selected = isSelected,
+                                onClick = { container.updateTargetThresholdCm(thresholdOption) },
+                                label = { Text("%.0f cm%s".format(thresholdOption, if (thresholdOption == 20f) " (Default)" else "")) }
+                            )
+                        }
                     }
                 }
             }
@@ -491,6 +554,7 @@ fun VisionGuardHomeScreen() {
                 )
                 HorizontalDivider()
 
+                MetricRow(label = "Active Profile", value = activeProfile.name)
                 MetricRow(label = "Total Faces Detected", value = "${metrics.faceCount}")
                 MetricRow(
                     label = "Secondary Viewers",
@@ -573,21 +637,23 @@ fun VisionGuardHomeScreen() {
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
-                    TextButton(
-                        onClick = {
-                            coroutineScope.launch {
-                                container.eventDao.clearAll()
+                    if (activeProfile == UserProfile.PARENT) {
+                        TextButton(
+                            onClick = {
+                                coroutineScope.launch {
+                                    container.eventDao.clearAll()
+                                }
                             }
+                        ) {
+                            Text("Clear", style = MaterialTheme.typography.bodySmall)
                         }
-                    ) {
-                        Text("Clear", style = MaterialTheme.typography.bodySmall)
                     }
                 }
                 HorizontalDivider()
 
                 if (recentEvents.isEmpty()) {
                     Text(
-                        text = "No events logged yet. Proximity triggers, privacy alerts, and recoveries will appear here.",
+                        text = "No events logged yet. Proximity triggers, privacy alerts, and profile events will appear here.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -604,9 +670,8 @@ fun VisionGuardHomeScreen() {
                                     fontWeight = FontWeight.SemiBold,
                                     fontSize = 13.sp,
                                     color = when (event.eventType) {
-                                        "PRIVACY_ALERT" -> MaterialTheme.colorScheme.error
-                                        "TOO_CLOSE" -> MaterialTheme.colorScheme.error
-                                        "PRIVACY_RECOVERED", "RECOVERED" -> MaterialTheme.colorScheme.primary
+                                        "PRIVACY_ALERT", "TOO_CLOSE", "PIN_LOCKOUT" -> MaterialTheme.colorScheme.error
+                                        "PRIVACY_RECOVERED", "RECOVERED", "PIN_AUTH_SUCCESS" -> MaterialTheme.colorScheme.primary
                                         else -> MaterialTheme.colorScheme.secondary
                                     }
                                 )
@@ -627,19 +692,21 @@ fun VisionGuardHomeScreen() {
             }
         }
 
-        // Manual Overlay Test Button
-        OutlinedButton(
-            onClick = {
-                container.overlayManager.toggleOverlay()
-            },
-            enabled = hasOverlayPermission,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(48.dp)
-        ) {
-            Text(
-                text = if (isOverlayShowing) "Hide Overlay Manually" else "Toggle Click-Through Overlay"
-            )
+        // Manual Overlay Test Button (Parent Only)
+        if (activeProfile == UserProfile.PARENT) {
+            OutlinedButton(
+                onClick = {
+                    container.overlayManager.toggleOverlay()
+                },
+                enabled = hasOverlayPermission,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+            ) {
+                Text(
+                    text = if (isOverlayShowing) "Hide Overlay Manually" else "Toggle Click-Through Overlay"
+                )
+            }
         }
 
         // Permissions Checklist
@@ -701,6 +768,122 @@ fun VisionGuardHomeScreen() {
         }
 
         Spacer(modifier = Modifier.height(16.dp))
+    }
+
+    // Camera Privacy Consent Dialog
+    if (showCameraConsentModal) {
+        AlertDialog(
+            onDismissRequest = { showCameraConsentModal = false },
+            title = {
+                Text("Camera Privacy & Local Processing", fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "VisionGuard uses your front camera purely for real-time, on-device face detection to monitor viewing distance and detect secondary viewers.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Text(
+                        text = "🔒 Zero Network: The application contains NO internet permissions. Frames are processed in volatile memory and are NEVER saved, stored, or transmitted.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = "Do you consent to enabling on-device camera monitoring?",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        container.grantCameraConsent()
+                        showCameraConsentModal = false
+                        executeStartProtection()
+                    }
+                ) {
+                    Text("I Consent & Start")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCameraConsentModal = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // PIN Prompt Dialog to Stop Protection when in Child profile
+    if (showPinPromptToStop) {
+        AlertDialog(
+            onDismissRequest = {
+                showPinPromptToStop = false
+                stopPinError = null
+                enteredPinToStop = ""
+            },
+            title = {
+                Text("Parent PIN Required", fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Protection is locked under Child Profile. Enter Parent PIN to stop protection:",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    OutlinedTextField(
+                        value = enteredPinToStop,
+                        onValueChange = { if (it.length <= 4) enteredPinToStop = it },
+                        label = { Text("Parent PIN") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    stopPinError?.let {
+                        Text(text = it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        when (val res = container.verifyParentPin(enteredPinToStop)) {
+                            is PinVerificationResult.Success -> {
+                                showPinPromptToStop = false
+                                stopPinError = null
+                                enteredPinToStop = ""
+                                executeStopProtection()
+                            }
+                            is PinVerificationResult.LockedOut -> {
+                                stopPinError = "Locked out. Try again in ${res.remainingSeconds}s."
+                            }
+                            is PinVerificationResult.Failed -> {
+                                stopPinError = if (res.isLockedOut) "Locked out for ${res.lockoutDurationSeconds}s."
+                                else "Incorrect PIN. ${res.attemptsRemaining} attempts left."
+                            }
+                            is PinVerificationResult.PinNotConfigured -> {
+                                // If PIN was not configured, allow stopping
+                                showPinPromptToStop = false
+                                executeStopProtection()
+                            }
+                        }
+                    }
+                ) {
+                    Text("Verify & Stop")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showPinPromptToStop = false
+                        stopPinError = null
+                        enteredPinToStop = ""
+                    }
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 }
 

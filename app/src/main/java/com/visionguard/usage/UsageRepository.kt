@@ -1,5 +1,5 @@
 // Repository for aggregating Android foreground app usage statistics.
-// Queries UsageStatsManager events, pairs RESUMED/PAUSED transitions, filters launcher/system, and extracts 7-day trends.
+// Queries UsageStatsManager events, pairs RESUMED/PAUSED transitions, attributes usage to active profiles, and computes trends.
 package com.visionguard.usage
 
 import android.app.AppOpsManager
@@ -11,6 +11,8 @@ import android.content.pm.PackageManager
 import android.graphics.drawable.Drawable
 import android.os.Build
 import android.os.Process
+import com.visionguard.policy.ProfileSwitchRecord
+import com.visionguard.policy.UserProfile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
@@ -62,7 +64,10 @@ class UsageRepository(private val context: Context) {
         return resolveInfo?.activityInfo?.packageName
     }
 
-    suspend fun getUsageData(): UsageAggregationResult = withContext(Dispatchers.IO) {
+    suspend fun getUsageData(
+        targetProfile: UserProfile = UserProfile.PARENT,
+        switchRecords: List<ProfileSwitchRecord> = emptyList()
+    ): UsageAggregationResult = withContext(Dispatchers.IO) {
         if (!hasUsagePermission() || usageStatsManager == null) {
             return@withContext UsageAggregationResult(
                 hasPermission = false,
@@ -86,6 +91,13 @@ class UsageRepository(private val context: Context) {
         calendar.set(Calendar.MILLISECOND, 0)
         val startOfToday = calendar.timeInMillis
 
+        // Helper to resolve which profile was active at a given timestamp
+        fun resolveProfileAt(timestamp: Long): UserProfile {
+            if (switchRecords.isEmpty()) return targetProfile
+            val record = switchRecords.filter { it.timestamp <= timestamp }.maxByOrNull { it.timestamp }
+            return record?.profile ?: switchRecords.firstOrNull()?.profile ?: UserProfile.PARENT
+        }
+
         // 1. Query today's events and compute foreground times by pairing ACTIVITY_RESUMED and ACTIVITY_PAUSED
         val todayEvents = usageStatsManager.queryEvents(startOfToday, now)
         val todayDurations = mutableMapOf<String, Long>()
@@ -107,10 +119,14 @@ class UsageRepository(private val context: Context) {
                 UsageEvents.Event.ACTIVITY_PAUSED -> {
                     val start = openResumes.remove(pkg)
                     if (start != null && event.timeStamp > start) {
-                        val duration = event.timeStamp - start
-                        todayDurations[pkg] = (todayDurations[pkg] ?: 0L) + duration
-                        if (isFeedApp(pkg) && duration > longestFeedMs) {
-                            longestFeedMs = duration
+                        // Check if session belongs to the queried profile
+                        val sessionProfile = resolveProfileAt(start)
+                        if (sessionProfile == targetProfile) {
+                            val duration = event.timeStamp - start
+                            todayDurations[pkg] = (todayDurations[pkg] ?: 0L) + duration
+                            if (isFeedApp(pkg) && duration > longestFeedMs) {
+                                longestFeedMs = duration
+                            }
                         }
                     }
                 }
@@ -120,16 +136,19 @@ class UsageRepository(private val context: Context) {
         // Close any still-open sessions
         for ((pkg, start) in openResumes) {
             if (now > start) {
-                val duration = now - start
-                todayDurations[pkg] = (todayDurations[pkg] ?: 0L) + duration
-                if (isFeedApp(pkg) && duration > longestFeedMs) {
-                    longestFeedMs = duration
+                val sessionProfile = resolveProfileAt(start)
+                if (sessionProfile == targetProfile) {
+                    val duration = now - start
+                    todayDurations[pkg] = (todayDurations[pkg] ?: 0L) + duration
+                    if (isFeedApp(pkg) && duration > longestFeedMs) {
+                        longestFeedMs = duration
+                    }
                 }
             }
         }
 
-        // Fallback / augmentation via queryUsageStats if queryEvents had empty intervals
-        if (todayDurations.isEmpty()) {
+        // Fallback via queryUsageStats if queryEvents had empty intervals
+        if (todayDurations.isEmpty() && switchRecords.isEmpty()) {
             val statsList = usageStatsManager.queryUsageStats(
                 UsageStatsManager.INTERVAL_DAILY,
                 startOfToday,
@@ -201,7 +220,6 @@ class UsageRepository(private val context: Context) {
         cal.set(Calendar.SECOND, 0)
         cal.set(Calendar.MILLISECOND, 0)
 
-        // Iterate backwards from 6 days ago up to today (7 days total)
         for (i in 6 downTo 0) {
             val dayCal = Calendar.getInstance().apply {
                 timeInMillis = cal.timeInMillis
