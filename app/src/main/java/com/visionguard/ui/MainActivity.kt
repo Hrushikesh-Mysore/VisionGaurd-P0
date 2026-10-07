@@ -1,5 +1,6 @@
 // Main launcher activity hosting Phase 0 spike verification screen.
-// Provides permission controls, service lifecycle triggers, and live detection metrics.
+// Provides permission controls, service lifecycle triggers, notification pause/resume awareness,
+// and live proximity metrics distinguishing between no-face, normal, and too-close states.
 package com.visionguard.ui
 
 import android.Manifest
@@ -15,6 +16,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -25,16 +27,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import com.visionguard.SpikeMetrics
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.visionguard.VisionGuardApp
-import com.visionguard.policy.SpikePolicy
+import com.visionguard.policy.ProximityEstimator
+import com.visionguard.policy.ProximityState
 import com.visionguard.vision.CameraForegroundService
 
 class MainActivity : ComponentActivity() {
@@ -43,7 +45,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             MaterialTheme(
-                colorScheme = if (androidx.compose.foundation.isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()
+                colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()
             ) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
@@ -126,16 +128,27 @@ fun SpikeHomeScreen() {
         )
 
         // Status Card
+        val statusContainerColor = when {
+            !metrics.isServiceRunning -> MaterialTheme.colorScheme.surfaceVariant
+            metrics.isPaused -> MaterialTheme.colorScheme.tertiaryContainer
+            metrics.isTooClose -> MaterialTheme.colorScheme.errorContainer
+            else -> MaterialTheme.colorScheme.primaryContainer
+        }
+
         Card(
             modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(
-                containerColor = if (metrics.isServiceRunning) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
-            ),
+            colors = CardDefaults.cardColors(containerColor = statusContainerColor),
             shape = RoundedCornerShape(16.dp)
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(
-                    text = if (metrics.isServiceRunning) "Protection Active" else "Protection Stopped",
+                    text = when {
+                        !metrics.isServiceRunning -> "Protection Stopped"
+                        metrics.isPaused -> "Protection Paused"
+                        metrics.isTooClose -> "Too Close! (< 20 cm)"
+                        metrics.isPowerSaving -> "Protection Active (Power Saving)"
+                        else -> "Protection Active"
+                    },
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold
                 )
@@ -143,7 +156,9 @@ fun SpikeHomeScreen() {
                 Text(
                     text = when {
                         !metrics.isServiceRunning -> "Tap Start to launch camera background monitor."
-                        metrics.isCameraBound -> "Camera active (monitoring face distance)."
+                        metrics.isPaused -> "Protection paused via notification or app. Proximity dimming is inactive."
+                        metrics.isPowerSaving -> "No face seen for >5s. Frame analysis throttled to 1 fps to save battery."
+                        metrics.isCameraBound -> "Camera active. Monitoring face distance (~20 cm threshold)."
                         else -> "Camera paused (screen off or background gating)."
                     },
                     style = MaterialTheme.typography.bodyMedium
@@ -151,7 +166,7 @@ fun SpikeHomeScreen() {
             }
         }
 
-        // Big One-Tap Start / Stop Button
+        // Primary Control: Start / Stop Button
         Button(
             onClick = {
                 if (!metrics.isServiceRunning) {
@@ -180,7 +195,30 @@ fun SpikeHomeScreen() {
             )
         }
 
-        // Live Debug Metrics
+        // In-App Pause / Resume Button (mirrors the notification control)
+        if (metrics.isServiceRunning) {
+            OutlinedButton(
+                onClick = {
+                    val intent = Intent(context, CameraForegroundService::class.java).apply {
+                        action = if (metrics.isPaused) {
+                            CameraForegroundService.ACTION_RESUME_PROTECTION
+                        } else {
+                            CameraForegroundService.ACTION_PAUSE_PROTECTION
+                        }
+                    }
+                    context.startService(intent)
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+            ) {
+                Text(
+                    text = if (metrics.isPaused) "Resume Protection" else "Pause Protection (Temporary)"
+                )
+            }
+        }
+
+        // Live Detection Metrics Card
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(16.dp)
@@ -195,24 +233,51 @@ fun SpikeHomeScreen() {
                     fontWeight = FontWeight.Bold
                 )
                 HorizontalDivider()
+
                 MetricRow(label = "Faces Detected", value = "${metrics.faceCount}")
+
+                val widthFractionStr = if (metrics.faceCount > 0) {
+                    "%.3f (trigger: %.2f, recover: %.2f)".format(
+                        metrics.widthFraction,
+                        ProximityEstimator.DEFAULT_TRIGGER_THRESHOLD_FRACTION,
+                        ProximityEstimator.DEFAULT_RECOVERY_THRESHOLD_FRACTION
+                    )
+                } else {
+                    "0.000 (No face)"
+                }
+                MetricRow(label = "Width Fraction", value = widthFractionStr)
+
+                val distanceEst = if (metrics.faceCount > 0) {
+                    val d = ProximityEstimator.estimateDistanceCm(metrics.widthFraction)
+                    if (d != null) "~%.0f cm (approximate)".format(d) else "Unknown"
+                } else {
+                    "None (no face in view)"
+                }
+                MetricRow(label = "Est. Distance", value = distanceEst)
+
+                val stateLabel = when (metrics.proximityState) {
+                    ProximityState.NO_FACE_DETECTED -> "NO FACE DETECTED"
+                    ProximityState.NORMAL_DISTANCE -> "NORMAL DISTANCE"
+                    ProximityState.TOO_CLOSE -> "TOO CLOSE (≤ 20 cm)"
+                }
                 MetricRow(
-                    label = "Width Fraction",
-                    value = if (metrics.faceCount > 0) "%.3f (threshold: %.2f)".format(metrics.widthFraction, SpikePolicy.SPIKE_CLOSE_THRESHOLD_FRACTION) else "0.000"
+                    label = "Proximity State",
+                    value = stateLabel,
+                    highlight = metrics.proximityState == ProximityState.TOO_CLOSE
                 )
+
+                val powerStateLabel = when {
+                    metrics.isPaused -> "PAUSED"
+                    metrics.isPowerSaving -> "POWER SAVING (1 fps idle)"
+                    metrics.isServiceRunning -> "ACTIVE (Full rate)"
+                    else -> "OFF"
+                }
+                MetricRow(label = "Analysis State", value = powerStateLabel)
+
                 MetricRow(
-                    label = "Distance State",
-                    value = if (metrics.isTooClose) "TOO CLOSE" else "NORMAL",
-                    highlight = metrics.isTooClose
-                )
-                MetricRow(
-                    label = "Overlay Window",
-                    value = if (isOverlayShowing) "VISIBLE (alpha 0.5)" else "HIDDEN",
+                    label = "Dim Overlay",
+                    value = if (isOverlayShowing) "ACTIVE (alpha 0.5)" else "HIDDEN",
                     highlight = isOverlayShowing
-                )
-                MetricRow(
-                    label = "Camera Binding",
-                    value = if (metrics.isCameraBound) "BOUND & ANALYZING" else "UNBOUND"
                 )
             }
         }

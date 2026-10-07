@@ -1,16 +1,19 @@
 // Foreground service hosting the CameraX lifecycle and offline ML Kit face detection.
-// Keeps analysis alive across apps while honoring screen on/off power-gating states.
+// Provides persistent notification pause/resume controls, hysteresis-based proximity dimming,
+// and 1 fps battery power-saving gating when no face is detected for over 5 seconds.
 package com.visionguard.vision
 
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.SystemClock
 import android.util.Log
 import android.util.Size
 import androidx.annotation.OptIn
@@ -28,7 +31,8 @@ import com.google.mlkit.vision.face.FaceDetector
 import com.google.mlkit.vision.face.FaceDetectorOptions
 import com.visionguard.R
 import com.visionguard.VisionGuardApp
-import com.visionguard.policy.SpikePolicy
+import com.visionguard.policy.ProximityEstimator
+import com.visionguard.policy.ProximityState
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
@@ -38,6 +42,11 @@ class CameraForegroundService : LifecycleService() {
     private var cameraProvider: ProcessCameraProvider? = null
     private lateinit var cameraExecutor: ExecutorService
     private lateinit var faceDetector: FaceDetector
+    private val proximityEstimator = ProximityEstimator()
+
+    private var isPaused: Boolean = false
+    private var lastFaceDetectedTimeMs: Long = 0L
+    private var lastAnalyzedFrameTimeMs: Long = 0L
 
     private val screenStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -48,7 +57,9 @@ class CameraForegroundService : LifecycleService() {
                 }
                 Intent.ACTION_SCREEN_ON -> {
                     Log.d(tag, "Screen ON detected: rebinding camera analysis")
-                    bindCameraAnalysis()
+                    if (!isPaused) {
+                        bindCameraAnalysis()
+                    }
                 }
             }
         }
@@ -57,7 +68,9 @@ class CameraForegroundService : LifecycleService() {
     override fun onCreate() {
         super.onCreate()
         cameraExecutor = Executors.newSingleThreadExecutor()
+        lastFaceDetectedTimeMs = SystemClock.elapsedRealtime()
 
+        // Fast bounding box detection without requiring eye landmarks or classifications
         val detectorOptions = FaceDetectorOptions.Builder()
             .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
             .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_NONE)
@@ -80,11 +93,41 @@ class CameraForegroundService : LifecycleService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
-        if (intent?.action == ACTION_STOP_SERVICE) {
-            stopSelf()
-            return START_NOT_STICKY
+        when (intent?.action) {
+            ACTION_PAUSE_PROTECTION -> {
+                pauseProtection()
+            }
+            ACTION_RESUME_PROTECTION -> {
+                resumeProtection()
+            }
+            ACTION_STOP_SERVICE -> {
+                stopSelf()
+                return START_NOT_STICKY
+            }
         }
         return START_STICKY
+    }
+
+    private fun pauseProtection() {
+        if (!isPaused) {
+            isPaused = true
+            Log.d(tag, "Protection paused by user")
+            VisionGuardApp.instance.container.overlayManager.hideOverlay()
+            proximityEstimator.reset()
+            VisionGuardApp.instance.container.updatePaused(true)
+            updateNotification()
+        }
+    }
+
+    private fun resumeProtection() {
+        if (isPaused) {
+            isPaused = false
+            Log.d(tag, "Protection resumed by user")
+            lastFaceDetectedTimeMs = SystemClock.elapsedRealtime()
+            VisionGuardApp.instance.container.updatePaused(false)
+            updateNotification()
+            bindCameraAnalysis()
+        }
     }
 
     private fun createNotificationChannel() {
@@ -101,15 +144,51 @@ class CameraForegroundService : LifecycleService() {
         }
     }
 
-    private fun startAsForeground() {
-        val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(getString(R.string.camera_service_notification_title))
-            .setContentText(getString(R.string.camera_service_notification_desc))
+    private fun buildNotification(paused: Boolean): Notification {
+        val title = if (paused) {
+            getString(R.string.camera_service_notification_title_paused)
+        } else {
+            getString(R.string.camera_service_notification_title)
+        }
+
+        val text = if (paused) {
+            getString(R.string.camera_service_notification_desc_paused)
+        } else {
+            getString(R.string.camera_service_notification_desc)
+        }
+
+        val actionText = if (paused) {
+            getString(R.string.notification_action_resume)
+        } else {
+            getString(R.string.notification_action_pause)
+        }
+
+        val actionIntent = Intent(this, CameraForegroundService::class.java).apply {
+            action = if (paused) ACTION_RESUME_PROTECTION else ACTION_PAUSE_PROTECTION
+        }
+        val actionPendingIntent = PendingIntent.getService(
+            this,
+            if (paused) 201 else 200,
+            actionIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle(title)
+            .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_menu_camera)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .addAction(
+                if (paused) android.R.drawable.ic_media_play else android.R.drawable.ic_media_pause,
+                actionText,
+                actionPendingIntent
+            )
             .build()
+    }
 
+    private fun startAsForeground() {
+        val notification = buildNotification(isPaused)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
                 NOTIFICATION_ID,
@@ -119,6 +198,12 @@ class CameraForegroundService : LifecycleService() {
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
+    }
+
+    private fun updateNotification() {
+        val notification = buildNotification(isPaused)
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.notify(NOTIFICATION_ID, notification)
     }
 
     private fun bindCameraAnalysis() {
@@ -164,6 +249,22 @@ class CameraForegroundService : LifecycleService() {
 
     @OptIn(ExperimentalGetImage::class)
     private fun analyzeImage(imageProxy: ImageProxy) {
+        if (isPaused) {
+            imageProxy.close()
+            return
+        }
+
+        val now = SystemClock.elapsedRealtime()
+        val isNoUserIdle = (now - lastFaceDetectedTimeMs) > NO_FACE_IDLE_TIMEOUT_MS
+        VisionGuardApp.instance.container.updatePowerSaving(isNoUserIdle)
+
+        // Battery optimization: if no face for > 5s, throttle analysis to 1 fps
+        if (isNoUserIdle && (now - lastAnalyzedFrameTimeMs) < IDLE_FRAME_POLL_INTERVAL_MS) {
+            imageProxy.close()
+            return
+        }
+        lastAnalyzedFrameTimeMs = now
+
         val mediaImage = imageProxy.image
         if (mediaImage == null) {
             imageProxy.close()
@@ -182,21 +283,28 @@ class CameraForegroundService : LifecycleService() {
 
             faceDetector.process(inputImage)
                 .addOnSuccessListener { faces ->
+                    val faceDetected = faces.isNotEmpty()
+                    if (faceDetected) {
+                        lastFaceDetectedTimeMs = SystemClock.elapsedRealtime()
+                        VisionGuardApp.instance.container.updatePowerSaving(false)
+                    }
+
                     val faceCount = faces.size
                     val largestFace = faces.maxByOrNull { it.boundingBox.width() }
                     val widthFraction = if (largestFace != null) {
-                        SpikePolicy.calculateWidthFraction(largestFace.boundingBox.width(), uprightWidth)
+                        ProximityEstimator.calculateWidthFraction(largestFace.boundingBox.width(), uprightWidth)
                     } else {
                         0f
                     }
-                    val isTooClose = SpikePolicy.isTooClose(widthFraction)
 
-                    Log.d(tag, "Spike analysis: faces=$faceCount, widthFraction=%.3f, isTooClose=$isTooClose".format(widthFraction))
+                    // Pure face-geometry proximity decision using hysteresis
+                    val proximityState = proximityEstimator.evaluate(faceDetected, widthFraction)
 
-                    VisionGuardApp.instance.container.updateDetections(faceCount, widthFraction, isTooClose)
+                    Log.d(tag, "Detection: faces=$faceCount, widthFraction=%.3f, state=$proximityState".format(widthFraction))
 
-                    // Automatic overlay trigger for spike verification
-                    if (isTooClose) {
+                    VisionGuardApp.instance.container.updateDetections(faceCount, widthFraction, proximityState)
+
+                    if (!isPaused && proximityState == ProximityState.TOO_CLOSE) {
                         VisionGuardApp.instance.container.overlayManager.showOverlay()
                     } else {
                         VisionGuardApp.instance.container.overlayManager.hideOverlay()
@@ -235,5 +343,9 @@ class CameraForegroundService : LifecycleService() {
         const val CHANNEL_ID = "visionguard_camera_service"
         const val NOTIFICATION_ID = 1001
         const val ACTION_STOP_SERVICE = "com.visionguard.action.STOP_SERVICE"
+        const val ACTION_PAUSE_PROTECTION = "com.visionguard.action.PAUSE_PROTECTION"
+        const val ACTION_RESUME_PROTECTION = "com.visionguard.action.RESUME_PROTECTION"
+        const val NO_FACE_IDLE_TIMEOUT_MS = 5000L
+        const val IDLE_FRAME_POLL_INTERVAL_MS = 1000L
     }
 }

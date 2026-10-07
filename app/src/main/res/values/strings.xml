@@ -3,4 +3,8 @@
     <string name="camera_service_notification_channel">VisionGuard Protection</string>
     <string name="camera_service_notification_title">VisionGuard Active</string>
     <string name="camera_service_notification_desc">Face detection is actively monitoring screen distance.</string>
+    <string name="camera_service_notification_title_paused">VisionGuard (Paused)</string>
+    <string name="camera_service_notification_desc_paused">Protection is paused. Proximity dimming is inactive.</string>
+    <string name="notification_action_pause">Pause Protection</string>
+    <string name="notification_action_resume">Resume Protection</string>
 </resources>

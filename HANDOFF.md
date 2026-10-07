@@ -1,33 +1,24 @@
 # VisionGuard Agent Handoff
 
 ## 1. Current Project State
-Phase 0 (Risk Spike) has been completely implemented, tested, built, and installed on the physical test device `ZF6526CJ97` (Motorola Moto E7 Plus, Android 10). The APK is currently running on the phone. Build passes cleanly (`./gradlew assembleDebug` and `./gradlew test`), and the merged manifest has been verified to contain zero network permissions.
+Phase 0 behavioral fixes have been implemented, tested on JVM (5/5 unit tests pass), verified for zero-network manifest, assembled, and installed on the connected test device `ZF6526CJ97` (Motorola Moto E7 Plus, Android 10). The project is ready for device verification by the user.
 
 ## 2. Last Completed Task
-Phase 0 implementation and deployment:
-- Camera foreground service (`LifecycleService`, `foregroundServiceType="camera"`, persistent notification, `ACTION_SCREEN_OFF/ON` dynamic power-gating).
-- CameraX front-camera analysis + bundled ML Kit face detection (`PERFORMANCE_MODE_FAST`).
-- Non-intrusive click-through `TYPE_APPLICATION_OVERLAY` (alpha 0.5, `FLAG_NOT_TOUCHABLE | FLAG_NOT_FOCUSABLE | FLAG_LAYOUT_IN_SCREEN`).
-- Compose UI with Start/Stop toggle, permission checklist, live detection HUD, and manual overlay toggle.
-- Unit tests for pure-Kotlin `SpikePolicy`.
-- Debug APK built and installed via ADB.
+Phase 0 behavioral fixes:
+- **Tuned Threshold with Hysteresis**: Proximity trigger adjusted to ~20 cm (`widthFraction >= 0.60`), recovery to ~30 cm (`widthFraction <= 0.45`). Boundary flickering resolved.
+- **Eye-Independent Detection**: Proximity decision uses overall face bounding box width directly; no eye landmarks or classifications required. Dimming is immediately dismissed when no face is present.
+- **Battery Conservation**: Frame analysis throttles to 1 fps when no face is detected for $> 5$ seconds; returns to full rate immediately upon face detection.
+- **Notification Pause / Resume**: Added interactive "Pause Protection" and "Resume Protection" actions to the ongoing notification without killing the service.
+- **Documentation & Tests**: Expanded unit tests to 5/5 passing, updated `STATUS.md`, `CHANGELOG.md`, `CODE_TOUR.md`.
 
 ## 3. Current Blocker
-Awaiting user manual execution of the 5 on-device spike verification tests (recorded as `UNVERIFIED` in `STATUS.md`).
+Awaiting user manual re-test of updated 20 cm distance threshold, eye occlusion, 5s no-face power saving, and notification Pause control on physical device.
 
 ## 4. Files Changed Recently
-- `app/build.gradle.kts`
-- `build.gradle.kts`
-- `settings.gradle.kts`
-- `gradle.properties`
-- `gradle/libs.versions.toml`
-- `app/src/main/AndroidManifest.xml`
 - `app/src/main/res/values/strings.xml`
-- `app/src/main/java/com/visionguard/VisionGuardApp.kt`
-- `app/src/main/java/com/visionguard/AppContainer.kt`
 - `app/src/main/java/com/visionguard/policy/SpikePolicy.kt`
 - `app/src/test/java/com/visionguard/policy/SpikePolicyTest.kt`
-- `app/src/main/java/com/visionguard/overlay/SpikeOverlayManager.kt`
+- `app/src/main/java/com/visionguard/AppContainer.kt`
 - `app/src/main/java/com/visionguard/vision/CameraForegroundService.kt`
 - `app/src/main/java/com/visionguard/ui/MainActivity.kt`
 - `STATUS.md`
@@ -36,21 +27,18 @@ Awaiting user manual execution of the 5 on-device spike verification tests (reco
 - `HANDOFF.md`
 
 ## 5. Tests / Build Results
-- `./gradlew test`: **PASS** (3/3 unit tests passed).
-- `./gradlew :app:processDebugMainManifest`: **PASS** (INTERNET and ACCESS_NETWORK_STATE confirmed absent).
-- `./gradlew assembleDebug`: **PASS** (`app-debug.apk` built successfully, 63 MB).
-- `adb install -r`: **SUCCESS** on device `ZF6526CJ97`.
+- `./gradlew test`: **PASS** (5/5 unit tests in `SpikePolicyTest` passed).
+- `./gradlew :app:processDebugMainManifest`: **PASS** (Zero network permissions confirmed).
+- `./gradlew assembleDebug`: **PASS** (Debug APK built).
+- `adb install -r`: **PASS** (Deployed to device `ZF6526CJ97`).
 
 ## 6. Exact Next Step
-1. Prompt user to unlock physical phone and test the 5 spike table rows in `STATUS.md`.
-2. Update `STATUS.md` with PASS/FAIL based on user feedback.
-3. Commit completed Phase 0 work and tag `phase-0`.
-4. Wait for user command `next` or `start Phase 1`. Do NOT start Phase 1 until explicitly commanded.
+1. Prompt user to perform the manual verification script on device for the 4 fixes.
+2. Mark table rows as PASS/FAIL in `STATUS.md` based on real device behavior.
+3. Wait for user explicit command `next` or `start Phase 1`. Do NOT begin Phase 1 until instructed.
 
 ## 7. Important Warnings / Things NOT to Redo
-- Do NOT rewrite or re-extract `AGENTS.md` or `docs/SRS.txt`.
-- Do NOT add `INTERNET` or `ACCESS_NETWORK_STATE` to the Android manifest under any circumstance.
-- Do NOT add Hilt or other DI libraries; continue using `AppContainer`.
-- Do NOT use AccessibilityService or deprecated `security-crypto`.
-- Always close `ImageProxy` in `finally` or inside `.addOnCompleteListener`.
-- Maintain overlay opacity $\le 0.8$ to preserve touch pass-through.
+- Do NOT create a new git tag (tag remains `phase-0` on baseline; fixes are on a separate commit).
+- Do NOT begin Phase 1 until the user explicitly says `next`.
+- Do NOT introduce `INTERNET` or `ACCESS_NETWORK_STATE` into the manifest.
+- Do NOT use DI frameworks (Hilt) or AccessibilityService.
