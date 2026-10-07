@@ -6,12 +6,12 @@
 ## What is Completed
 - Ingested and verified specification from `docs/SRS.pdf` (`docs/SRS.txt`) and `docs/Agent.md`.
 - Extracted `AGENTS.md` to repository root per Master Prompt specification.
-- Initialized Git repository (`main` branch).
+- Initialized Git repository (`main` branch) and committed baseline setup (`18ea6c1`).
 - Established tracking documentation: `STATUS.md`, `CHANGELOG.md`, `CODE_TOUR.md`, `HANDOFF.md`.
-- Performed initial development environment inspection.
+- Performed detailed environment toolchain check.
 
 ## What is Currently Being Worked On
-- Environment readiness check (JDK 17, Android SDK, adb, Gradle wrapper, connected device).
+- Environment toolchain readiness (resolving missing JDK, Android SDK, adb, and device connection).
 
 ## What is Not Completed
 - Phase 0: Risk spike (camera foreground service, ML Kit face detection, overlay pass-through).
@@ -24,23 +24,30 @@
 - Phase 7: Polish and APK.
 - Phase 8: Event pack.
 
+## Environment Check Details
+1. **Java / JDK**: Not found (`which java` / `which javac` returned not found; `JAVA_HOME` unset; `/usr/lib/jvm` does not exist).
+2. **Android SDK**: Not found (`ANDROID_HOME` / `ANDROID_SDK_ROOT` unset; `~/Android/Sdk` and `/usr/lib/android-sdk` do not exist).
+3. **adb**: Not found (`which adb` returned not found).
+4. **Gradle / Wrapper**: Not found (`which gradle` not found; project `./gradlew` not yet scaffolded).
+5. **Connected Android Device**: None detected via USB (`lsusb` shows peripheral webcam and mouse; no phone detected).
+
 ## Known Bugs / Problems / Blockers
-- **Build Environment Missing**: JDK 17 (`java`), Android SDK / Command-line Tools, and `adb` are not installed or configured in the system `PATH`.
-- No Android device or emulator currently visible via `adb`.
+- **Build Environment Missing**: Missing JDK (17 or 21), Android SDK (commandline-tools / platforms / build-tools), and `adb`.
+- **Target Device**: No Android device with USB debugging currently connected.
 
 ## Tests Performed and Results
-- Environment check commands executed: `java` (not found), `adb` (not found).
-- Code/build tests: None (no application code yet).
+- Toolchain environment probes executed (all reported above).
 
 ## Build Status
-- Not built yet (waiting for environment setup and project scaffolding).
+- Not built yet (waiting for toolchains to scaffold the project).
 
 ## APK / Device Testing Status
 - Not deployed yet.
 
 ## Exact Next Recommended Action
-- User to install/configure JDK 17 and Android SDK/adb as requested.
-- Once environment is verified, scaffold Android project and start Phase 0.
+- User to run manual setup commands to install JDK 17 (or 21), `adb`, Android SDK / Studio, and connect an Android device with USB debugging enabled.
+- Verify environment with `java -version`, `adb devices`, and `echo $ANDROID_HOME`.
+- Then instruct agent to scaffold the project and start Phase 0.
 
 ## Important Decisions Made
 - Architecture strictly adheres to zero-network manifest constraint (`INTERNET` and `ACCESS_NETWORK_STATE` prohibited).
