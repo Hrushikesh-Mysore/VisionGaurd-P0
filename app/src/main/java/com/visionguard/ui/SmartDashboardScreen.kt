@@ -467,10 +467,8 @@ fun SmartDashboardScreen() {
         ProfileSwitchModal(
             currentProfile = activeProfile,
             onDismiss = { showProfileDialog = false },
-            onSwitch = { targetProfile ->
-                container.switchProfile(targetProfile)
-                showProfileDialog = false
-            }
+            onSwitch = { targetProfile, pin -> container.switchProfile(targetProfile, pin) },
+            onSwitchComplete = { showProfileDialog = false }
         )
     }
 }
@@ -479,7 +477,8 @@ fun SmartDashboardScreen() {
 fun ProfileSwitchModal(
     currentProfile: UserProfile,
     onDismiss: () -> Unit,
-    onSwitch: (UserProfile) -> Unit
+    onSwitch: (UserProfile, String) -> PinVerificationResult,
+    onSwitchComplete: () -> Unit
 ) {
     val container = VisionGuardApp.instance.container
     var enteredPin by remember { mutableStateOf("") }
@@ -516,7 +515,7 @@ fun ProfileSwitchModal(
                     )
                     OutlinedTextField(
                         value = enteredPin,
-                        onValueChange = { if (it.length <= 4) enteredPin = it },
+                        onValueChange = { if (it.length <= 4 && it.all(Char::isDigit)) enteredPin = it },
                         label = { Text("4-Digit PIN") },
                         visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
@@ -524,29 +523,28 @@ fun ProfileSwitchModal(
                     )
                     OutlinedTextField(
                         value = confirmPin,
-                        onValueChange = { if (it.length <= 4) confirmPin = it },
+                        onValueChange = { if (it.length <= 4 && it.all(Char::isDigit)) confirmPin = it },
                         label = { Text("Confirm 4-Digit PIN") },
-                        visualTransformation = PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                } else if (currentProfile == UserProfile.CHILD) {
-                    Text(
-                        text = "Enter Parent PIN to switch to Parent profile:",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    OutlinedTextField(
-                        value = enteredPin,
-                        onValueChange = { if (it.length <= 4) enteredPin = it },
-                        label = { Text("Parent PIN") },
                         visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
                         modifier = Modifier.fillMaxWidth()
                     )
                 } else {
                     Text(
-                        text = "Switching to Child profile will enforce 2h limit, 25 cm proximity threshold, and lock all settings.",
+                        text = if (currentProfile == UserProfile.CHILD) {
+                            "Enter Parent PIN to switch to Parent profile:"
+                        } else {
+                            "Enter Parent PIN to confirm switching to Child profile:"
+                        },
                         style = MaterialTheme.typography.bodySmall
+                    )
+                    OutlinedTextField(
+                        value = enteredPin,
+                        onValueChange = { if (it.length <= 4 && it.all(Char::isDigit)) enteredPin = it },
+                        label = { Text("Parent PIN") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        modifier = Modifier.fillMaxWidth()
                     )
                 }
 
@@ -559,8 +557,8 @@ fun ProfileSwitchModal(
             Button(
                 onClick = {
                     if (isSettingPin) {
-                        if (enteredPin.length < 4) {
-                            pinError = "PIN must be at least 4 digits."
+                        if (enteredPin.length != 4 || !enteredPin.all(Char::isDigit)) {
+                            pinError = "PIN must be exactly 4 digits."
                         } else if (enteredPin != confirmPin) {
                             pinError = "PINs do not match."
                         } else {
@@ -568,33 +566,25 @@ fun ProfileSwitchModal(
                             isSettingPin = false
                             pinError = null
                         }
-                    } else if (currentProfile == UserProfile.CHILD) {
-                        when (val res = container.verifyParentPin(enteredPin)) {
-                            is PinVerificationResult.Success -> {
-                                onSwitch(UserProfile.PARENT)
-                            }
-                            is PinVerificationResult.LockedOut -> {
-                                pinError = "Locked out. Try again in ${res.remainingSeconds}s."
-                            }
-                            is PinVerificationResult.Failed -> {
-                                pinError = if (res.isLockedOut) "Too many failed attempts. Locked out for ${res.lockoutDurationSeconds}s."
-                                else "Incorrect PIN. ${res.attemptsRemaining} attempts left."
-                            }
-                            is PinVerificationResult.PinNotConfigured -> {
-                                isSettingPin = true
-                            }
-                        }
                     } else {
-                        // Switching from Parent to Child
-                        onSwitch(UserProfile.CHILD)
+                        val target = if (currentProfile == UserProfile.CHILD) UserProfile.PARENT else UserProfile.CHILD
+                        when (val result = onSwitch(target, enteredPin)) {
+                            is PinVerificationResult.Success -> onSwitchComplete()
+                            is PinVerificationResult.LockedOut -> pinError = "Locked out. Try again in ${result.remainingSeconds}s."
+                            is PinVerificationResult.Failed -> pinError = if (result.isLockedOut) {
+                                "Too many failed attempts. Locked out for ${result.lockoutDurationSeconds}s."
+                            } else {
+                                "Incorrect PIN. ${result.attemptsRemaining} attempts left."
+                            }
+                            is PinVerificationResult.PinNotConfigured -> pinError = "Set a Parent PIN before switching profiles."
+                        }
                     }
                 }
             ) {
                 Text(
                     text = when {
                         isSettingPin -> "Save PIN"
-                        currentProfile == UserProfile.CHILD -> "Authenticate & Switch"
-                        else -> "Switch to Child Profile"
+                        else -> "Authenticate & Switch"
                     }
                 )
             }

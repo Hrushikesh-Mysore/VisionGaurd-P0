@@ -45,6 +45,35 @@ class PinAuthPolicy(
     private var lockoutUntilMs: Long = 0L
     private var currentLockoutDurationMs: Long = initialLockoutMs
 
+    data class State(
+        val consecutiveFailures: Int,
+        val lockoutRemainingMs: Long,
+        val currentLockoutDurationMs: Long,
+        val savedAtElapsedMs: Long,
+        val savedBootCount: Long?
+    )
+
+    fun saveState(currentTimeMs: Long = getCurrentTime()): State = State(
+        consecutiveFailures = consecutiveFailures,
+        lockoutRemainingMs = (lockoutUntilMs - currentTimeMs).coerceAtLeast(0L),
+        currentLockoutDurationMs = currentLockoutDurationMs,
+        savedAtElapsedMs = currentTimeMs,
+        savedBootCount = clock?.bootCount()
+    )
+
+    fun restoreState(state: State, currentTimeMs: Long = getCurrentTime()) {
+        consecutiveFailures = state.consecutiveFailures.coerceAtLeast(0)
+        currentLockoutDurationMs = state.currentLockoutDurationMs.coerceIn(initialLockoutMs, MAX_LOCKOUT_MS)
+        val sameBoot = clock?.bootCount() == state.savedBootCount
+        val remaining = if (sameBoot && currentTimeMs >= state.savedAtElapsedMs) {
+            (state.lockoutRemainingMs - (currentTimeMs - state.savedAtElapsedMs)).coerceAtLeast(0L)
+        } else {
+            // elapsedRealtime resets after reboot; retain the saved remainder conservatively.
+            state.lockoutRemainingMs
+        }
+        lockoutUntilMs = currentTimeMs + remaining
+    }
+
     fun isLockedOut(currentTimeMs: Long = getCurrentTime()): Boolean {
         return currentTimeMs < lockoutUntilMs
     }
@@ -107,5 +136,5 @@ class PinAuthPolicy(
         currentLockoutDurationMs = initialLockoutMs
     }
 
-    private fun getCurrentTime(): Long = clock?.elapsedRealtime() ?: System.currentTimeMillis()
+    private fun getCurrentTime(): Long = clock?.elapsedRealtime() ?: System.nanoTime() / 1_000_000L
 }

@@ -833,7 +833,7 @@ fun VisionGuardHomeScreen() {
                     )
                     OutlinedTextField(
                         value = enteredPinToStop,
-                        onValueChange = { if (it.length <= 4) enteredPinToStop = it },
+                        onValueChange = { if (it.length <= 4 && it.all(Char::isDigit)) enteredPinToStop = it },
                         label = { Text("Parent PIN") },
                         visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
@@ -862,9 +862,7 @@ fun VisionGuardHomeScreen() {
                                 else "Incorrect PIN. ${res.attemptsRemaining} attempts left."
                             }
                             is PinVerificationResult.PinNotConfigured -> {
-                                // If PIN was not configured, allow stopping
-                                showPinPromptToStop = false
-                                executeStopProtection()
+                                stopPinError = "A Parent PIN is required to change Child protection settings."
                             }
                         }
                     }

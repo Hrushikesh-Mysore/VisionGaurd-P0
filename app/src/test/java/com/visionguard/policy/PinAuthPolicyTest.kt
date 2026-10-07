@@ -146,4 +146,47 @@ class PinAuthPolicyTest {
         val result = policy.verifyPin("1234", null, null)
         assertTrue(result is PinVerificationResult.PinNotConfigured)
     }
+
+    @Test
+    fun savedLockoutState_restoresRemainingTimeAndFailureBackoff() {
+        val salt = PinAuthPolicy.generateSalt()
+        val hash = PinAuthPolicy.hashPin("9999", salt)
+        repeat(5) { policy.verifyPin("0000", salt, hash) }
+        testClock.advanceBy(10_000L)
+        val saved = policy.saveState()
+
+        testClock.advanceBy(5_000L)
+        val restored = PinAuthPolicy(clock = testClock)
+        restored.restoreState(saved)
+        assertEquals(15L, restored.getRemainingLockoutSeconds())
+        assertTrue(restored.verifyPin("9999", salt, hash) is PinVerificationResult.LockedOut)
+    }
+
+    @Test
+    fun savedLockoutState_survivesElapsedClockResetAfterReboot() {
+        val salt = PinAuthPolicy.generateSalt()
+        val hash = PinAuthPolicy.hashPin("9999", salt)
+        repeat(5) { policy.verifyPin("0000", salt, hash) }
+        val saved = policy.saveState()
+
+        testClock.setTime(10L)
+        val restored = PinAuthPolicy(clock = testClock)
+        restored.restoreState(saved)
+        assertEquals(30L, restored.getRemainingLockoutSeconds())
+    }
+
+    @Test
+    fun savedLockoutState_usesBootCountWhenNewUptimeExceedsSavedUptime() {
+        testClock.reboot(1_000L, 1L)
+        policy = PinAuthPolicy(clock = testClock)
+        val salt = PinAuthPolicy.generateSalt()
+        val hash = PinAuthPolicy.hashPin("9999", salt)
+        repeat(5) { policy.verifyPin("0000", salt, hash) }
+        val saved = policy.saveState()
+
+        testClock.reboot(2_000L, 2L)
+        val restored = PinAuthPolicy(clock = testClock)
+        restored.restoreState(saved)
+        assertEquals(30L, restored.getRemainingLockoutSeconds())
+    }
 }

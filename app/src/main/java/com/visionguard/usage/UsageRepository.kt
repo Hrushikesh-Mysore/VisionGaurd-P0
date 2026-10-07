@@ -12,6 +12,7 @@ import android.graphics.drawable.Drawable
 import android.os.Build
 import android.os.Process
 import com.visionguard.policy.ProfileSwitchRecord
+import com.visionguard.policy.ProfileAttributionPolicy
 import com.visionguard.policy.UserProfile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -93,9 +94,7 @@ class UsageRepository(private val context: Context) {
 
         // Helper to resolve which profile was active at a given timestamp
         fun resolveProfileAt(timestamp: Long): UserProfile {
-            if (switchRecords.isEmpty()) return targetProfile
-            val record = switchRecords.filter { it.timestamp <= timestamp }.maxByOrNull { it.timestamp }
-            return record?.profile ?: switchRecords.firstOrNull()?.profile ?: UserProfile.PARENT
+            return ProfileAttributionPolicy.profileAt(timestamp, switchRecords, targetProfile)
         }
 
         // 1. Query today's events and compute foreground times by pairing ACTIVITY_RESUMED and ACTIVITY_PAUSED

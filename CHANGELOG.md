@@ -2,6 +2,14 @@
 
 All notable changes to the VisionGuard project will be documented in this file.
 
+## [Phase 4 - Profiles and PIN Completion] - 2026-10-08
+### Completed
+- Required Parent PIN authentication for both Parent-to-Child and Child-to-Parent profile switches.
+- Persisted failed-attempt counts and exponential lockout timing in app-private preferences, using elapsed realtime and Android boot count instead of wall time.
+- Persisted profile transition timestamps and applied them to usage-session attribution after process recreation.
+- Added JVM tests for lockout restoration and profile attribution; 44 total tests pass.
+- Updated `STATUS.md` and `CODE_TOUR.md`; physical UI verification remains UNVERIFIED because ADB is unavailable.
+
 ## [Phase 3 - Smart Dashboard] - 2026-10-08
 ### Added
 - Foreground app usage tracking via `UsageRepository` querying `UsageStatsManager.queryEvents`:

@@ -1,7 +1,7 @@
 # VisionGuard Status
 
 ## Current Phase
-**Phase 3: Smart Dashboard (Completed - Verified in JVM Unit Tests & Deployed on Device)**
+**Phase 4 implementation complete; physical profile-flow verification is UNVERIFIED.** Phases 0–3 remain as previously recorded.
 
 ## What is Completed
 - **Phase 0 & 1: Eye Guard (Verified)**:
@@ -43,6 +43,11 @@
   - JVM unit tests: **30/30 passed** (7 in `SuggestionEngineTest`, 8 in `PrivacyGuardPolicyTest`, 7 in `EyeGuardPolicyTest`, 8 in `SpikePolicyTest`).
   - Merged manifest privacy audit: **PASS** (`INTERNET` and `ACCESS_NETWORK_STATE` strictly absent).
   - Debug APK built and installed on connected Motorola Moto E7 Plus (`ZF6526CJ97`, Android 10).
+- **Phase 4: Parent/Child Profiles and PIN (Implementation Complete; Device Verification UNVERIFIED)**:
+  - Profile switches in either direction require the existing PBKDF2-HMAC-SHA256 Parent PIN; missing PIN fails closed for child protection actions.
+  - Failed attempts and exponential lockout state persist in app-private preferences and use `SystemClock.elapsedRealtime()` plus Android boot count, so wall-clock changes do not clear a lockout.
+  - Profile transition timestamps persist locally and are used to attribute foreground usage sessions to the profile active when each session began.
+  - Pure Kotlin coverage verifies PIN lockout restoration across process recreation/reboot and profile attribution across transitions.
 
 ## Feature Verification Table
 
@@ -66,56 +71,45 @@
 | **Phase 3** | State-based bottom navigation | Bottom bar switches between Protection and Dashboard | PASS | Verified in UI render on device |
 | **Phase 3** | Screenshot shield (`FLAG_SECURE`) | Switch toggles FLAG_SECURE on window (off by default) | PASS | Verified in Compose UI on device |
 | **Phase 3** | Physical Digital Wellbeing alignment | Real usage numbers match Android Digital Wellbeing | **UNVERIFIED** | Manual cross-check by user required |
+| **Phase 4** | PIN hashing and lockout | Unique salted PBKDF2 hash with exponential retry delay | PASS | `PinAuthPolicyTest` |
+| **Phase 4** | Lockout persistence | Attempts and remaining delay survive process restart and reboot | PASS | `PinAuthPolicyTest`; Android integration compiled |
+| **Phase 4** | Profile switching | Parent/Child switches require Parent PIN | PASS (code path) | `AppContainer.switchProfile`; physical UI flow UNVERIFIED |
+| **Phase 4** | Usage attribution | Session time follows the profile active at session start | PASS (policy) | `ProfileAttributionPolicyTest`; on-device totals UNVERIFIED |
 
 *Note: Per honesty rule, items requiring interactive physical interaction with multiple people or manual cross-check with system settings are marked UNVERIFIED until tested by user on phone.*
 
 ## What is Currently Being Worked On
-- Phase 3 completed; awaiting user on-device verification.
+- Phase 4 implementation is complete; physical testing is unavailable because ADB cannot start in this environment.
 
 ## What is Not Completed
-- Phase 4: Profiles + PIN (Parent/Child profiles, PIN switch).
 - Phase 5: Time Tokens (state machine, cooldowns, 5-minute windows).
 - Phase 6: Privacy Ledger (MASVS encryption, data wipe).
 - Phase 7: Polish & Production APK.
 - Phase 8: Event pack.
 
 ## Known Bugs / Problems / Blockers
-- None blocking. Build, unit tests (30/30), manifest audit, and APK install all succeeded.
+- Phase 4 physical UI verification is pending because the ADB daemon cannot bind its local socket in this environment.
 
 ## Tests Performed and Results
-- Unit tests (`./gradlew test`): **PASS** (30/30 tests passed: 7 in `SuggestionEngineTest`, 8 in `PrivacyGuardPolicyTest`, 7 in `EyeGuardPolicyTest`, 8 in `SpikePolicyTest`).
+- Unit tests (`./gradlew test`): **PASS** (44/44 tests; includes 11 `PinAuthPolicyTest` and 3 `ProfileAttributionPolicyTest`).
 - Merged manifest privacy audit (`./gradlew :app:processDebugMainManifest`): **PASS** (zero network permissions: `INTERNET` and `ACCESS_NETWORK_STATE` strictly absent).
 - APK Build (`./gradlew assembleDebug`): **PASS** (exit code 0).
-- APK Deployment (`adb install -r`): **PASS** (installed to `ZF6526CJ97`).
-- Device Launch: Activity starts with zero runtime crashes or ANRs.
+- Phase 4 device verification: **UNVERIFIED** (`adb devices -l` failed because the ADB daemon could not bind its local socket: `Operation not permitted`).
 
 ## Build Status
 - **SUCCESS** (`./gradlew assembleDebug` and `./gradlew test` exit 0).
 
 ## APK / Device Testing Status
-- Phase 3 APK installed on `ZF6526CJ97`. Awaiting user verification script on device.
+- Historical Phase 3 device deployment remains as recorded above; this Phase 4 build was not installed because no ADB device was accessible.
 
-## Exact Next Recommended Action
-- User to test Phase 3 on Motorola Moto E7 Plus (`ZF6526CJ97`):
-  1. Open app and observe bottom navigation bar with "Protection" and "Dashboard" tabs.
-  2. Tap "Dashboard" tab:
-     - If Usage Access is not granted, observe empty state card with "Grant Usage Access" button. Tap button, grant permission in Android settings, and return.
-     - If Usage Access is granted (pre-granted via adb during install), observe Hero Card displaying real today's screen time (e.g. `Xh Ym`) and the circular progress ring.
-  3. Verify Top Apps list:
-     - Confirm up to 5 real installed apps are listed with labels, icons, formatted durations, and proportional progress bars (VisionGuard itself and launcher are excluded).
-  4. Verify Protection Today cards:
-     - Observe Eye Guard reminders count and Privacy Guard alerts count matching today's Room database records.
-  5. Verify Suggestion Card:
-     - Check recommended suggestion (e.g., Late Night wind-down if past 11 PM, or 20-20-20 rule if Eye Guard was triggered frequently, or Healthy Balance).
-  6. Verify 7-Day Trend Bar Chart:
-     - Check 7 vertical bars (past 6 days + today highlighted in primary color).
-  7. Test Daily Goal Chips:
-     - Tap 2h, 3h, 4h, 6h chips -> Observe circular progress ring percentage dynamically recalculates.
-  8. Test Screenshot Shield (`FLAG_SECURE`):
-     - Toggle ON -> Attempt screenshot or open app switcher (screen blocked/black in previews).
-     - Toggle OFF -> Screenshot permitted (demo mode).
-  9. Switch back to "Protection" tab -> Confirm Phase 0, 1, 2 HUD, camera monitor, and calibration cards continue functioning seamlessly.
-- Await user command (`next` / `start Phase 4`) before beginning Phase 4.
+## Phase 4 Phone Verification Still Needed
+1. Open Dashboard and tap the profile chip. Set a four-digit numeric Parent PIN.
+2. Try Parent → Child with an incorrect PIN; confirm the profile does not change and the failure message appears.
+3. Enter the correct PIN; confirm Child becomes active and restricted controls remain disabled.
+4. Try Child → Parent with an incorrect PIN, then the correct PIN; confirm only the correct PIN switches profiles.
+5. Make usage sessions in both profiles, force-stop/reopen the app, and confirm the saved profile timeline remains available for attribution.
+6. Trigger five incorrect attempts, force-stop/reopen, and confirm lockout remains; change device wall time during lockout and confirm it does not shorten the delay.
+7. If possible, reboot during lockout and confirm the lockout remains active.
 
 ## Important Decisions & Honest Limitations
 - **Approximate Distance**: Pinhole optical estimation ($d \approx K / w$) has an expected error margin of ~15% depending on individual facial dimensions and pitch/roll.
@@ -123,3 +117,5 @@
 - **FLAG_SECURE Off by Default**: Screenshot protection is opt-in via a switch on the dashboard to allow demo recording and pitch slide captures.
 - **Usage Access Local Only**: Usage statistics are aggregated strictly on-device using local `UsageStatsManager` events with zero network transmission.
 - **Unmeasured Battery**: Frame throttling to 1 fps during idle avoids >95% of ML Kit inferences, but physical battery consumption is not claimed as measured until multi-hour testing.
+
+- **Phase 4 persistence scope**: PIN lockout metadata and profile-switch timestamps use app-private SharedPreferences; database encryption and the Privacy Ledger are outside this phase.

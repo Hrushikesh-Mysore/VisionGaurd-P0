@@ -6,7 +6,7 @@ VisionGuard is implemented as a single `:app` module Android application built w
 ## Package Tour
 
 ### `com.visionguard`
-The root package contains `VisionGuardApp` (the custom `Application` class) and `AppContainer` (the centralized dependency container). `AppContainer` instantiates and holds singletons for overlay management, Room database persistence (`AppDatabase`), calibration state ($K$), target distance threshold settings, Privacy Guard toggle state, daily screen time goals, `UsageRepository`, `SuggestionEngine`, screenshot protection state (`FLAG_SECURE`), and maintains the reactive `SpikeMetrics` `StateFlow` consumed by both the UI and background components.
+The root package contains `VisionGuardApp` (the custom `Application` class) and `AppContainer` (the centralized dependency container). `AppContainer` holds the existing service/UI singletons and reactive `SpikeMetrics`. Phase 4 stores the salted Parent PIN hash, serialized lockout state, active profile, and timestamped profile transitions in app-private `SharedPreferences`. PIN lockout timing uses `SystemClock.elapsedRealtime()` plus Android's boot count, and profile transitions feed session-level usage attribution after process restart.
 
 ### `com.visionguard.policy`
 This package contains pure Kotlin domain logic with zero Android framework imports and time abstracted via a `Clock` interface for deterministic testing.
@@ -15,10 +15,12 @@ This package contains pure Kotlin domain logic with zero Android framework impor
 - `EyeGuardPolicy`: Full Eye Guard distance estimation engine integrating pinhole geometry ($d \approx K / \text{widthFraction}$), user calibration ($K = d_{\text{cal}} \times w_{\text{cal}}$), Exponential Moving Average (EMA) smoothing ($\alpha = 0.35$), $N = 5$ consecutive-frame confirmation to prevent flicker, hysteresis (~20 cm trigger, ~30 cm recovery), proportional dimming opacity capped at 0.8, and 5-second no-face idle power saving. Fully covered by JVM unit tests (`EyeGuardPolicyTest`).
 - `PrivacyGuardPolicy`: Phase 2 secondary viewer detection engine. Identifies secondary faces with `widthFraction >= 0.10` and `abs(yaw) < 35°` facing the screen, requiring $N = 3$ consecutive frames to trigger an alert. Automatically clears after 2 seconds of absence. Supports manual dismissal. Unit tested in `PrivacyGuardPolicyTest`.
 - `SuggestionEngine`: Phase 3 pure Kotlin rule-based digital wellbeing engine. Evaluates 4 rules: (1) $\ge 40$ continuous minutes in a feed/social/video app suggests a walk, stretch, or physical book; (2) frequent Eye Guard triggers ($\ge 5$) suggests the 20-20-20 rule; (3) active usage after 11 PM or before 5 AM suggests winding down for sleep; (4) healthy balanced usage returns positive encouragement. Fully unit tested in `SuggestionEngineTest`.
+- `PinAuthPolicy`: Phase 4 pure Kotlin PBKDF2-HMAC-SHA256 PIN verifier with unique salts, constant-time hash comparison, exponential retry lockout, and serializable lockout state. It receives elapsed time through `Clock`; Android persistence and boot identity stay in `AppContainer`.
+- `ProfileAttributionPolicy`: Resolves the app-level profile active when a foreground usage session began. Tested against saved Parent/Child transition timelines.
 - **Guard Priority Rule**: Privacy Guard shield takes precedence over Eye Guard dimming. Unauthorized secondary viewing is an urgent confidentiality breach requiring immediate obscuring of screen contents, which supersedes personal ergonomic viewing distance dimming.
 
 ### `com.visionguard.usage`
-This package manages local Android foreground screen time extraction without network permissions or third-party SDKs. `UsageRepository` queries Android's `UsageStatsManager` events (`ACTIVITY_RESUMED` and `ACTIVITY_PAUSED`), pairs them per package to accurately compute foreground durations, excludes our own app, the system launcher, and internal system processes, identifies feed/media apps for session length monitoring, and aggregates 7-day usage trends for charting.
+This package manages local Android foreground screen time extraction without network permissions or third-party SDKs. `UsageRepository` queries Android's `UsageStatsManager` events (`ACTIVITY_RESUMED` and `ACTIVITY_PAUSED`), pairs them per package to compute foreground durations, attributes each session using the persisted Phase 4 profile timeline, excludes our own app and launcher, identifies feed/media apps for session length monitoring, and aggregates 7-day usage trends. Physical profile totals remain unverified until the UI is tested on a device.
 
 ### `com.visionguard.data`
 This package manages local offline Room database persistence via `EyeGuardEventEntity`, `EyeGuardEventDao`, and `AppDatabase`. Derived events (`TOO_CLOSE`, `RECOVERED`, `CALIBRATION`, `PAUSED`, `RESUMED`, `NO_FACE_POWER_SAVING`, `PRIVACY_ALERT`, `PRIVACY_RECOVERED`, `PRIVACY_DISMISSED`, `PRIVACY_TOGGLED`) are stored locally on-device without network transmission, providing an append-only safety event ledger observable as reactive coroutine Flows. Includes `getCountSince` queries for dashboard protection stats.
@@ -45,7 +47,7 @@ This package contains the Jetpack Compose user interface. `MainActivity` hosts a
    - Local Safety Event Ledger displaying recent Room database records.
    - Permissions checklist with direct links to system settings for Camera, Overlays, Usage Access, and Notifications.
 2. `SmartDashboardScreen` (Hero Screen):
-   - Date and profile chip header.
+   - Date and profile chip header with Parent/Child switching gated by the Parent PIN in either direction.
    - Hero card with big today's screen time and custom Compose `Canvas` circular progress ring against daily goal.
    - Daily goal adjuster chips (2h, 3h, 4h default, 6h).
    - Protection summary cards for Eye Guard reminders and Privacy Guard alerts today.
