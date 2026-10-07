@@ -10,6 +10,7 @@ import com.visionguard.overlay.SpikeOverlayManager
 import com.visionguard.policy.EyeGuardDecision
 import com.visionguard.policy.EyeGuardPolicy
 import com.visionguard.policy.PolicyDecision
+import com.visionguard.policy.PrivacyGuardDecision
 import com.visionguard.policy.ProtectionState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -35,7 +36,13 @@ data class SpikeMetrics(
     val consecutiveCloseFrames: Int = 0,
     val calibrationK: Float = EyeGuardPolicy.DEFAULT_CALIBRATION_K,
     val targetThresholdCm: Float = EyeGuardPolicy.DEFAULT_TOO_CLOSE_CM,
-    val isCameraBound: Boolean = false
+    val isCameraBound: Boolean = false,
+    // Phase 2 Privacy Guard metrics:
+    val isPrivacyGuardEnabled: Boolean = true,
+    val isPrivacyAlertActive: Boolean = false,
+    val isPrivacyDismissed: Boolean = false,
+    val secondaryViewerCount: Int = 0,
+    val secondaryConsecutiveFrames: Int = 0
 ) {
     val isTooClose: Boolean
         get() = protectionState == ProtectionState.TOO_CLOSE
@@ -66,6 +73,9 @@ class AppContainer(private val appContext: Context) {
     private val _targetThresholdCm = MutableStateFlow(EyeGuardPolicy.DEFAULT_TOO_CLOSE_CM)
     val targetThresholdCm: StateFlow<Float> = _targetThresholdCm.asStateFlow()
 
+    private val _isPrivacyGuardEnabled = MutableStateFlow(true)
+    val isPrivacyGuardEnabled: StateFlow<Boolean> = _isPrivacyGuardEnabled.asStateFlow()
+
     private val _spikeMetrics = MutableStateFlow(SpikeMetrics())
     val spikeMetrics: StateFlow<SpikeMetrics> = _spikeMetrics.asStateFlow()
 
@@ -81,6 +91,25 @@ class AppContainer(private val appContext: Context) {
         _targetThresholdCm.value = clamped
         _spikeMetrics.value = _spikeMetrics.value.copy(targetThresholdCm = clamped)
         logEvent("SETTING", clamped, "Target threshold updated to %.0f cm".format(clamped))
+    }
+
+    fun setPrivacyGuardEnabled(enabled: Boolean) {
+        _isPrivacyGuardEnabled.value = enabled
+        _spikeMetrics.value = _spikeMetrics.value.copy(
+            isPrivacyGuardEnabled = enabled,
+            isPrivacyAlertActive = if (!enabled) false else _spikeMetrics.value.isPrivacyAlertActive
+        )
+        if (!enabled) {
+            // If disabled while alert is showing, hide privacy shield
+            if (_spikeMetrics.value.isPrivacyAlertActive) {
+                overlayManager.updateGuards(
+                    isPrivacyActive = false,
+                    shouldDim = _spikeMetrics.value.shouldDim,
+                    dimOpacity = _spikeMetrics.value.dimOpacity
+                )
+            }
+        }
+        logEvent("PRIVACY_TOGGLED", null, if (enabled) "Privacy Guard enabled" else "Privacy Guard disabled")
     }
 
     fun logEvent(eventType: String, distanceCm: Float?, detail: String) {
@@ -115,7 +144,10 @@ class AppContainer(private val appContext: Context) {
             estimatedDistanceCm = if (isRunning) _spikeMetrics.value.estimatedDistanceCm else null,
             rawDistanceCm = if (isRunning) _spikeMetrics.value.rawDistanceCm else null,
             consecutiveCloseFrames = if (isRunning) _spikeMetrics.value.consecutiveCloseFrames else 0,
-            isCameraBound = if (isRunning) _spikeMetrics.value.isCameraBound else false
+            isCameraBound = if (isRunning) _spikeMetrics.value.isCameraBound else false,
+            isPrivacyAlertActive = if (isRunning) _spikeMetrics.value.isPrivacyAlertActive else false,
+            secondaryViewerCount = if (isRunning) _spikeMetrics.value.secondaryViewerCount else 0,
+            secondaryConsecutiveFrames = if (isRunning) _spikeMetrics.value.secondaryConsecutiveFrames else 0
         )
     }
 
@@ -123,7 +155,8 @@ class AppContainer(private val appContext: Context) {
         _spikeMetrics.value = _spikeMetrics.value.copy(
             isPaused = isPaused,
             shouldDim = if (isPaused) false else _spikeMetrics.value.shouldDim,
-            dimOpacity = if (isPaused) 0.0f else _spikeMetrics.value.dimOpacity
+            dimOpacity = if (isPaused) 0.0f else _spikeMetrics.value.dimOpacity,
+            isPrivacyAlertActive = if (isPaused) false else _spikeMetrics.value.isPrivacyAlertActive
         )
     }
 
@@ -145,6 +178,17 @@ class AppContainer(private val appContext: Context) {
             estimatedDistanceCm = decision.smoothedDistanceCm,
             rawDistanceCm = decision.rawDistanceCm,
             consecutiveCloseFrames = decision.consecutiveCloseFrames
+        )
+    }
+
+    fun updatePrivacyDecision(decision: PrivacyGuardDecision) {
+        val paused = _spikeMetrics.value.isPaused
+        val enabled = _isPrivacyGuardEnabled.value
+        _spikeMetrics.value = _spikeMetrics.value.copy(
+            isPrivacyAlertActive = decision.isTriggered && !paused && enabled,
+            isPrivacyDismissed = decision.isDismissed,
+            secondaryViewerCount = decision.qualifyingViewerCount,
+            secondaryConsecutiveFrames = decision.consecutiveFrames
         )
     }
 

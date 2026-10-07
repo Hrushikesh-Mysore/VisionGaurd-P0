@@ -6,30 +6,37 @@ VisionGuard is implemented as a single `:app` module Android application built w
 ## Package Tour
 
 ### `com.visionguard`
-The root package contains `VisionGuardApp` (the custom `Application` class) and `AppContainer` (the centralized dependency container). `AppContainer` instantiates and holds singletons for overlay management, Room database persistence (`AppDatabase`), calibration state ($K$), target distance threshold settings, and maintains the reactive `SpikeMetrics` `StateFlow` consumed by both the UI and background components.
+The root package contains `VisionGuardApp` (the custom `Application` class) and `AppContainer` (the centralized dependency container). `AppContainer` instantiates and holds singletons for overlay management, Room database persistence (`AppDatabase`), calibration state ($K$), target distance threshold settings, Privacy Guard toggle state, and maintains the reactive `SpikeMetrics` `StateFlow` consumed by both the UI and background components.
 
 ### `com.visionguard.policy`
-This package contains pure Kotlin domain logic with zero Android framework imports and time abstracted via a `Clock` interface for deterministic testing. In Phase 1, it houses:
+This package contains pure Kotlin domain logic with zero Android framework imports and time abstracted via a `Clock` interface for deterministic testing.
 - `Clock` and `TestClock`: Time abstraction interface.
-- `FaceObservation`: Immutable representation of detected faces (width fraction, yaw angle, face count, timestamp).
-- `EyeGuardPolicy`: Full Eye Guard distance estimation engine integrating pinhole geometry ($d \approx K / \text{widthFraction}$), user calibration ($K = d_{\text{cal}} \times w_{\text{cal}}$), Exponential Moving Average (EMA) smoothing ($\alpha = 0.35$), $N = 5$ consecutive-frame confirmation to prevent flicker, hysteresis (~20 cm trigger, ~30 cm recovery), proportional dimming opacity capped at 0.8, and 5-second no-face idle power saving. Fully covered by fast JVM unit tests (`EyeGuardPolicyTest`).
+- `FaceObservation` & `DetectedFace`: Immutable representation of detected faces (owner width fraction, yaw angle, total face count, timestamp, and list of secondary faces).
+- `EyeGuardPolicy`: Full Eye Guard distance estimation engine integrating pinhole geometry ($d \approx K / \text{widthFraction}$), user calibration ($K = d_{\text{cal}} \times w_{\text{cal}}$), Exponential Moving Average (EMA) smoothing ($\alpha = 0.35$), $N = 5$ consecutive-frame confirmation to prevent flicker, hysteresis (~20 cm trigger, ~30 cm recovery), proportional dimming opacity capped at 0.8, and 5-second no-face idle power saving. Fully covered by JVM unit tests (`EyeGuardPolicyTest`).
+- `PrivacyGuardPolicy`: Phase 2 secondary viewer detection engine. Identifies secondary faces with `widthFraction >= 0.10` and `abs(yaw) < 35°` facing the screen, requiring $N = 3$ consecutive frames to trigger an alert. Automatically clears after 2 seconds of absence. Supports manual dismissal. Unit tested in `PrivacyGuardPolicyTest`.
+- **Guard Priority Rule**: Privacy Guard shield takes precedence over Eye Guard dimming. Unauthorized secondary viewing is an urgent confidentiality breach requiring immediate obscuring of screen contents, which supersedes personal ergonomic viewing distance dimming.
 
 ### `com.visionguard.data`
-This package manages local offline Room database persistence. In Phase 1, it houses `EyeGuardEventEntity`, `EyeGuardEventDao`, and `AppDatabase`. Derived events (`TOO_CLOSE`, `RECOVERED`, `CALIBRATION`, `PAUSED`, `RESUMED`, `NO_FACE_POWER_SAVING`) are stored locally on-device without network transmission, providing an append-only safety event ledger observable as reactive coroutine Flows.
+This package manages local offline Room database persistence via `EyeGuardEventEntity`, `EyeGuardEventDao`, and `AppDatabase`. Derived events (`TOO_CLOSE`, `RECOVERED`, `CALIBRATION`, `PAUSED`, `RESUMED`, `NO_FACE_POWER_SAVING`, `PRIVACY_ALERT`, `PRIVACY_RECOVERED`, `PRIVACY_DISMISSED`, `PRIVACY_TOGGLED`) are stored locally on-device without network transmission, providing an append-only safety event ledger observable as reactive coroutine Flows.
 
 ### `com.visionguard.overlay`
-This package manages system-level alert and dimming overlays using Android's `WindowManager`. In Phase 1, `SpikeOverlayManager` displays a semi-transparent black view using `TYPE_APPLICATION_OVERLAY` with `FLAG_NOT_TOUCHABLE | FLAG_NOT_FOCUSABLE | FLAG_LAYOUT_IN_SCREEN`. It dynamically modulates opacity proportionally with closeness (scaling from 0.45 to a strict maximum cap of 0.80) to preserve underlying touch pass-through in accordance with Android 12+ security rules.
+This package manages system-level alert and dimming overlays using Android's `WindowManager`. `SpikeOverlayManager` manages two distinct visual protection modes:
+1. `EYE_GUARD_DIM`: Semi-transparent black view modulating opacity proportionally with closeness (scaling from 0.45 to a strict maximum cap of 0.80).
+2. `PRIVACY_GUARD_SHIELD`: Frosted dark navy slate overlay (0.80 alpha). On API 31+ devices with hardware cross-window blur enabled, dynamically activates `FLAG_BLUR_BEHIND` with `blurBehindRadius`.
+- **Trade-Off Decision**: Overlays use `FLAG_NOT_TOUCHABLE` to remain click-through, ensuring users are never locked out of underlying tasks or device controls. Because click-through overlays cannot directly consume touch taps, dismissal controls are provided externally via persistent notification actions and in-app buttons.
 
 ### `com.visionguard.vision`
-This package manages camera capture and machine vision processing. `CameraForegroundService` extends `LifecycleService` with `foregroundServiceType="camera"` and displays a persistent foreground notification with interactive "Pause Protection" / "Resume Protection" controls. It streams CameraX front-camera frames to ML Kit's offline face detector (`PERFORMANCE_MODE_FAST`) without requiring eye landmarks. It maps detections into `FaceObservation`, evaluates `EyeGuardPolicy`, logs safety events to Room, controls proportional overlay dimming, throttles to 1 fps whenever no face is detected for $> 5$ seconds, and unbinds/rebinds camera hardware on `ACTION_SCREEN_OFF` and `ACTION_SCREEN_ON`.
+This package manages camera capture and machine vision processing. `CameraForegroundService` extends `LifecycleService` with `foregroundServiceType="camera"`. It streams CameraX front-camera frames to ML Kit's offline face detector (`PERFORMANCE_MODE_FAST`). It maps detections into `FaceObservation` (distinguishing the largest face as owner and remaining faces as potential secondary viewers), concurrently evaluates `EyeGuardPolicy` and `PrivacyGuardPolicy`, coordinates priority overlays, logs safety events to Room, throttles to 1 fps during extended no-face periods, and unbinds/rebinds camera hardware on screen off/on.
 
 ### `com.visionguard.ui`
-This package contains the Jetpack Compose user interface. In Phase 1, `MainActivity` renders `EyeGuardHomeScreen`, featuring:
+This package contains the Jetpack Compose user interface. `MainActivity` renders `VisionGuardHomeScreen`, featuring:
 - One-tap Start/Stop protection toggle and in-app Pause/Resume button.
-- Prominent non-punitive warning banner when the phone is held too close.
+- Prominent Privacy Alert banner when secondary viewers are detected, with one-tap "Dismiss Privacy Shield" control.
+- Eye Guard warning banner when the phone is held too close.
+- Privacy Guard on/off toggle switch.
 - Distance Calibration card allowing one-tap calibration at ~30 cm reading distance.
 - Threshold setting chips (20 cm default, 25 cm, 30 cm).
-- Live Detection Metrics HUD (face count, raw and EMA width fraction, estimated distance in cm, consecutive close frames, overlay opacity, and analysis rate).
+- Live Multi-Face Detection Metrics HUD (total faces, secondary viewers, confirmation frames, privacy state, owner face width, estimated distance, eye guard state, active overlay mode).
 - Local Safety Event Ledger displaying recent Room database records.
 - Permissions checklist with direct links to system settings.
 

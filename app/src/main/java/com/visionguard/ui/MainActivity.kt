@@ -1,6 +1,6 @@
-// Main launcher activity hosting VisionGuard Phase 1 Eye Guard screen.
-// Provides permission controls, calibration workflow, distance threshold settings,
-// Room event history inspection, and live proximity metrics HUD.
+// Main launcher activity hosting VisionGuard Eye Guard & Privacy Guard screens.
+// Provides permission controls, privacy toggle, calibration workflow, distance thresholds,
+// Room safety event history inspection, and live multi-face detection metrics HUD.
 package com.visionguard.ui
 
 import android.Manifest
@@ -15,7 +15,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -25,7 +24,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -35,6 +33,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.visionguard.VisionGuardApp
+import com.visionguard.overlay.OverlayMode
 import com.visionguard.policy.EyeGuardPolicy
 import com.visionguard.policy.ProtectionState
 import com.visionguard.vision.CameraForegroundService
@@ -55,7 +54,7 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    EyeGuardHomeScreen()
+                    VisionGuardHomeScreen()
                 }
             }
         }
@@ -63,7 +62,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun EyeGuardHomeScreen() {
+fun VisionGuardHomeScreen() {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val container = VisionGuardApp.instance.container
@@ -71,9 +70,11 @@ fun EyeGuardHomeScreen() {
 
     val metrics by container.spikeMetrics.collectAsState()
     val isOverlayShowing by container.overlayManager.isOverlayVisible.collectAsState()
+    val overlayMode by container.overlayManager.overlayMode.collectAsState()
     val currentOverlayOpacity by container.overlayManager.currentOpacity.collectAsState()
     val calibrationK by container.calibrationK.collectAsState()
     val targetThresholdCm by container.targetThresholdCm.collectAsState()
+    val isPrivacyGuardEnabled by container.isPrivacyGuardEnabled.collectAsState()
     val recentEvents by container.eventDao.getRecentEvents(10).collectAsState(initial = emptyList())
 
     var hasCameraPermission by remember {
@@ -131,13 +132,47 @@ fun EyeGuardHomeScreen() {
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         Text(
-            text = "VisionGuard Eye Guard",
+            text = "VisionGuard",
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold
         )
 
-        // Prominent Warning Banner when too close
-        if (metrics.isTooClose) {
+        // Prominent Privacy Alert Banner (Takes Priority)
+        if (metrics.isPrivacyAlertActive) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Text(
+                        text = "⚠️ Privacy Alert: Shoulder Surfer Detected!",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "A second person is viewing your screen. Frosted privacy shield is active to protect your data.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Button(
+                        onClick = {
+                            val dismissIntent = Intent(context, CameraForegroundService::class.java).apply {
+                                action = CameraForegroundService.ACTION_DISMISS_PRIVACY
+                            }
+                            context.startService(dismissIntent)
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Text("Dismiss Privacy Shield")
+                    }
+                }
+            }
+        } else if (metrics.isTooClose) {
+            // Eye Guard Warning Banner when too close
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
@@ -165,6 +200,7 @@ fun EyeGuardHomeScreen() {
         val statusContainerColor = when {
             !metrics.isServiceRunning -> MaterialTheme.colorScheme.surfaceVariant
             metrics.isPaused -> MaterialTheme.colorScheme.tertiaryContainer
+            metrics.isPrivacyAlertActive -> MaterialTheme.colorScheme.errorContainer
             metrics.isTooClose -> MaterialTheme.colorScheme.errorContainer
             metrics.isNoFaceDimmed -> MaterialTheme.colorScheme.secondaryContainer
             else -> MaterialTheme.colorScheme.primaryContainer
@@ -180,6 +216,7 @@ fun EyeGuardHomeScreen() {
                     text = when {
                         !metrics.isServiceRunning -> "Protection Stopped"
                         metrics.isPaused -> "Protection Paused"
+                        metrics.isPrivacyAlertActive -> "Privacy Alert: Shoulder Surfer Detected!"
                         metrics.isTooClose -> "Eye Guard: Too Close! (< %.0f cm)".format(targetThresholdCm)
                         metrics.isNoFaceDimmed -> "No Face (>5s) - Screen Dimmed"
                         metrics.isPowerSaving -> "Protection Active (Power Saving)"
@@ -192,10 +229,12 @@ fun EyeGuardHomeScreen() {
                 Text(
                     text = when {
                         !metrics.isServiceRunning -> "Tap Start to launch camera background monitor."
-                        metrics.isPaused -> "Protection paused via notification or app. Proximity dimming is inactive."
+                        metrics.isPaused -> "Protection paused via notification or app. Overlays are inactive."
+                        metrics.isPrivacyAlertActive -> "Second face facing screen. Frosted privacy shield active."
+                        metrics.isTooClose -> "Phone is within %.0f cm. Screen dimmed proportionally.".format(targetThresholdCm)
                         metrics.isNoFaceDimmed -> "No face seen for >5s. Screen dimmed and analysis throttled to 1 fps."
                         metrics.isPowerSaving -> "No face seen for >5s. Frame analysis throttled to 1 fps to save battery."
-                        metrics.isCameraBound -> "Camera active. Monitoring viewing distance (~%.0f cm threshold).".format(targetThresholdCm)
+                        metrics.isCameraBound -> "Camera active. Eye Guard (~%.0f cm) & Privacy Guard active.".format(targetThresholdCm)
                         else -> "Camera paused (screen off or background gating)."
                     },
                     style = MaterialTheme.typography.bodyMedium
@@ -255,7 +294,49 @@ fun EyeGuardHomeScreen() {
             }
         }
 
-        // Calibration Card
+        // Privacy Guard Settings Card (Phase 2 Toggle)
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Privacy Guard (Shoulder Surfing)",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Shields screen when a secondary viewer looks over your shoulder.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = isPrivacyGuardEnabled,
+                        onCheckedChange = { container.setPrivacyGuardEnabled(it) }
+                    )
+                }
+
+                if (metrics.isPrivacyDismissed) {
+                    Text(
+                        text = "ℹ️ Privacy Shield currently dismissed. Will re-arm when secondary viewer departs.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+        }
+
+        // Distance Calibration Card
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(16.dp)
@@ -376,14 +457,30 @@ fun EyeGuardHomeScreen() {
                 )
                 HorizontalDivider()
 
-                MetricRow(label = "Faces Detected", value = "${metrics.faceCount}")
+                MetricRow(label = "Total Faces Detected", value = "${metrics.faceCount}")
+                MetricRow(
+                    label = "Secondary Viewers",
+                    value = "${metrics.secondaryViewerCount} (frames: ${metrics.secondaryConsecutiveFrames}/3)"
+                )
+
+                val privacyStatusStr = when {
+                    !isPrivacyGuardEnabled -> "DISABLED"
+                    metrics.isPrivacyAlertActive -> "SHIELD ACTIVE"
+                    metrics.isPrivacyDismissed -> "DISMISSED (Temporary)"
+                    else -> "MONITORING"
+                }
+                MetricRow(
+                    label = "Privacy Guard State",
+                    value = privacyStatusStr,
+                    highlight = metrics.isPrivacyAlertActive
+                )
 
                 val widthFractionStr = if (metrics.faceCount > 0) {
                     "Raw: %.3f | EMA: %.3f".format(metrics.widthFraction, metrics.smoothedWidthFraction)
                 } else {
                     "0.000 (No face)"
                 }
-                MetricRow(label = "Width Fraction", value = widthFractionStr)
+                MetricRow(label = "Owner Face Width", value = widthFractionStr)
 
                 val distanceEst = if (metrics.faceCount > 0) {
                     val d = metrics.estimatedDistanceCm
@@ -405,22 +502,19 @@ fun EyeGuardHomeScreen() {
                     ProtectionState.NO_FACE_DIMMED -> "NO FACE DETECTED (Dimmed / 1 fps)"
                 }
                 MetricRow(
-                    label = "Protection State",
+                    label = "Eye Guard State",
                     value = stateLabel,
                     highlight = metrics.isTooClose || metrics.isNoFaceDimmed
                 )
 
-                val powerStateLabel = when {
-                    metrics.isPaused -> "PAUSED"
-                    metrics.isPowerSaving -> "POWER SAVING (1 fps idle)"
-                    metrics.isServiceRunning -> "ACTIVE (Full rate)"
-                    else -> "OFF"
+                val overlayLabel = when (overlayMode) {
+                    OverlayMode.PRIVACY_GUARD_SHIELD -> "PRIVACY SHIELD (Frosted)"
+                    OverlayMode.EYE_GUARD_DIM -> "EYE GUARD DIM (opacity: %.2f)".format(currentOverlayOpacity)
+                    OverlayMode.NONE -> if (isOverlayShowing) "MANUAL (opacity: %.2f)".format(currentOverlayOpacity) else "HIDDEN"
                 }
-                MetricRow(label = "Analysis State", value = powerStateLabel)
-
                 MetricRow(
-                    label = "Dim Overlay",
-                    value = if (isOverlayShowing) "ACTIVE (opacity: %.2f)".format(currentOverlayOpacity) else "HIDDEN",
+                    label = "Active Overlay Mode",
+                    value = overlayLabel,
                     highlight = isOverlayShowing
                 )
             }
@@ -459,23 +553,28 @@ fun EyeGuardHomeScreen() {
 
                 if (recentEvents.isEmpty()) {
                     Text(
-                        text = "No events logged yet. Proximity triggers, recoveries, and calibrations will appear here.",
+                        text = "No events logged yet. Proximity triggers, privacy alerts, and recoveries will appear here.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 } else {
                     val dateFormat = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
-                    recentEvents.take(5).forEach { event ->
+                    recentEvents.take(6).forEach { event ->
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Column {
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text(
                                     text = event.eventType,
                                     fontWeight = FontWeight.SemiBold,
                                     fontSize = 13.sp,
-                                    color = if (event.eventType == "TOO_CLOSE") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                                    color = when (event.eventType) {
+                                        "PRIVACY_ALERT" -> MaterialTheme.colorScheme.error
+                                        "TOO_CLOSE" -> MaterialTheme.colorScheme.error
+                                        "PRIVACY_RECOVERED", "RECOVERED" -> MaterialTheme.colorScheme.primary
+                                        else -> MaterialTheme.colorScheme.secondary
+                                    }
                                 )
                                 Text(
                                     text = event.detail,
@@ -527,7 +626,7 @@ fun EyeGuardHomeScreen() {
 
                 PermissionItem(
                     name = "Camera",
-                    description = "Required to estimate screen viewing distance locally.",
+                    description = "Required to estimate screen viewing distance and detect viewers locally.",
                     isGranted = hasCameraPermission,
                     onRequest = { cameraPermissionLauncher.launch(Manifest.permission.CAMERA) },
                     onOpenSettings = { openAppSettings(context) }
@@ -535,7 +634,7 @@ fun EyeGuardHomeScreen() {
 
                 PermissionItem(
                     name = "Display Over Other Apps",
-                    description = "Enables non-intrusive dimming overlay during close proximity.",
+                    description = "Enables non-intrusive dimming and frosted privacy shields.",
                     isGranted = hasOverlayPermission,
                     onRequest = { openOverlaySettings(context) },
                     onOpenSettings = { openOverlaySettings(context) }
@@ -544,7 +643,7 @@ fun EyeGuardHomeScreen() {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     PermissionItem(
                         name = "Notifications",
-                        description = "Required for persistent foreground service and pause controls.",
+                        description = "Required for persistent foreground service and shield controls.",
                         isGranted = hasNotificationPermission,
                         onRequest = { notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) },
                         onOpenSettings = { openAppSettings(context) }

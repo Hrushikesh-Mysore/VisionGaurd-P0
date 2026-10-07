@@ -2,6 +2,30 @@
 
 All notable changes to the VisionGuard project will be documented in this file.
 
+## [Phase 2 - Privacy Guard] - 2026-10-07
+### Added
+- Multi-face observation model in `FaceObservation` with `DetectedFace` (width fraction, yaw angle) distinguishing owner from secondary viewers.
+- Pure Kotlin `PrivacyGuardPolicy` with zero Android imports and `Clock` abstraction:
+  - Detects secondary viewers facing the screen (`widthFraction >= 0.10`, `abs(yaw) < 35°`).
+  - Confirms condition for $N = 3$ consecutive frames before triggering alert.
+  - Automatically clears alert and overlay after 2 seconds of secondary absence.
+  - Supports manual dismissal suppressing re-triggering until the viewer leaves and returns.
+- Guard Priority Engine: Privacy Guard frosted shield takes precedence over Eye Guard dimming.
+- Enhanced `SpikeOverlayManager` with `OverlayMode` support:
+  - Frosted dark navy slate privacy shield (`PRIVACY_GUARD_SHIELD`).
+  - Hardware cross-window blur on API 31+ (`FLAG_BLUR_BEHIND` and `blurBehindRadius`) when supported.
+  - Click-through behavior preserved (`FLAG_NOT_TOUCHABLE`) with opacity strictly capped at 0.80 for Android 12+ touch pass-through rule C3.
+  - Explanatory comment documenting trade-off for external dismiss controls.
+- Interactive Dismissal Controls:
+  - One-tap "Dismiss Shield" action in persistent notification shade.
+  - In-app "Dismiss Privacy Shield" button on home screen.
+- Privacy Guard on/off toggle switch on Home screen.
+- Room database logging for Privacy Guard events (`PRIVACY_ALERT`, `PRIVACY_RECOVERED`, `PRIVACY_DISMISSED`, `PRIVACY_TOGGLED`).
+- Extended Live Detection Metrics HUD displaying total faces, secondary viewers, confirmation frames, privacy guard state, and active overlay mode.
+- Comprehensive JVM unit test suite (`PrivacyGuardPolicyTest`) with 8 tests covering single face, small/turned faces, 3-frame confirmation, 2s absence clearance, manual dismissal, and guard priority (23/23 unit tests passing across all suites).
+- Merged manifest privacy audit confirmed: zero network permissions (`INTERNET`, `ACCESS_NETWORK_STATE` strictly absent).
+- Debug APK deployed and verified on connected test phone (`ZF6526CJ97`, Motorola Moto E7 Plus, Android 10).
+
 ## [Phase 1 - Eye Guard] - 2026-10-07
 ### Added
 - Pure Kotlin `Clock` abstraction and `FaceObservation` domain model in `com.visionguard.policy`.
