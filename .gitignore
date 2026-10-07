@@ -1,5 +1,7 @@
 *.iml
 .gradle
+/.kotlin/
+/error-17914093606
 /local.properties
 /.idea
 .DS_Store
