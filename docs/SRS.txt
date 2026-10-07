@@ -1,0 +1,1070 @@
+VisionGuard - Software Requirements Specification
+
+VisionGuard: Software Requirements
+Specification
+Version: 1.0 (Prototype baseline) Date: 7 October 2026 Prepared by: [Team name /
+member names] Status: Draft for product development event Standard followed: IEEE
+29148 / IEEE 830 structure, security controls mapped to OWASP MASVS v2
+
+1. Introduction
+1.1 Purpose
+This document specifies the requirements for VisionGuard, an Android application that
+protects users' eyesight, screen privacy and time using on-device computer vision and
+local usage tracking. It is intended for developers, testers, evaluators and stakeholders.
+
+1.2 Scope
+VisionGuard is a privacy-first phone safety and wellbeing system. It combines existing
+technologies (on-device face detection, Android usage statistics, overlay windows) into
+one integrated, resource-efficient experience. It does not introduce new AI models. All
+processing is local; the prototype has no cloud component.
+In scope: Eye Guard, Privacy Guard, Smart Dashboard, Multi-User Profiles, Time Tokens,
+local encrypted storage. Out of scope (prototype): cloud sync, remote parental control,
+face-based user identification, iOS support, content filtering.
+
+1.3 Definitions and abbreviations
+Term
+
+Meaning
+
+FGS
+
+Foreground Service (Android)
+
+Overlay
+
+Window drawn above other apps via
+TYPE_APPLICATION_OVERLAY
+
+Time Token
+
+A short, limited usage window granted after a daily
+limit is reached
+
+Shoulder surfing
+
+A second person viewing the user's screen
+
+Page 1 of 15
+
+VisionGuard - Software Requirements Specification
+
+Term
+
+Meaning
+
+EMA
+
+Exponential moving average
+
+MASVS / MASTG
+
+OWASP Mobile Application Security Verification
+Standard / Testing Guide
+
+DPDP
+
+India's Digital Personal Data Protection Act, 2023
+
+1.4 References
+IEEE 29148: Systems and software engineering, requirements engineering
+OWASP MASVS v2 and MASTG
+Android developer documentation: CameraX, ML Kit Face Detection,
+UsageStatsManager, foreground service types, overlay windows
+DPDP Act 2023 (India), COPPA (US), GDPR (EU), for consent considerations only
+
+1.5 Document overview
+Section 2 describes the product context. Section 3 lists specific requirements. Section 4
+covers data. Section 5 covers security and privacy. Section 6 covers verification. Section 7
+covers risks and prototype scope.
+
+2. Overall description
+2.1 Product perspective
+VisionGuard is a standalone Android application. It relies on the device front camera, the
+Android usage-statistics service and the system overlay facility. It is independent of
+Google accounts and any server.
+
+2.2 Product functions (summary)
+ID
+
+Function
+
+Summary
+
+F1
+
+Eye Guard
+
+Detects the phone held too close, warns, and dims
+the screen
+
+F2
+
+Privacy Guard
+
+Detects an additional viewer, alerts, and dims or
+blurs the screen
+
+Page 2 of 15
+
+VisionGuard - Software Requirements Specification
+
+ID
+
+Function
+
+Summary
+
+F3
+
+Multi-User Profiles
+
+Tracks usage and limits per person (e.g., parent and
+child)
+
+F4
+
+Smart Dashboard
+
+Shows usage and suggests alternatives to doomscrolling
+
+F5
+
+Time Tokens
+
+Replaces hard blocks with cooldowns and 5-minute
+windows
+
+2.3 User classes
+User
+
+Description
+
+Privileges
+
+Adult user
+
+Uses own device or a
+parent profile
+
+Full settings, can set limits, view all
+profiles
+
+Parent
+(administrator)
+
+Manages child profiles
+
+PIN/biometric-protected settings, limit
+and token configuration
+
+Child user
+
+Uses a restricted profile
+
+Cannot change limits or disable
+protection
+
+Evaluator / tester
+
+Verifies privacy and
+security claims
+
+Read-only inspection through the
+Privacy Ledger
+
+2.4 Operating environment
+Android 10 (API 29) or higher; tested target: Android 13 and 14
+Device with front camera, minimum 3 GB RAM (mid-range class)
+Permissions granted by the user: Camera, Display over other apps, Usage access,
+Notifications
+Sideloaded APK for the prototype
+
+2.5 Design and implementation constraints
+C1: Kotlin, Jetpack Compose, MVVM, Hilt, Coroutines/Flow.
+C2: The camera cannot be accessed from a plain background service. A camera-type
+foreground service with a persistent notification is mandatory (Android 14 requires the
+FOREGROUND_SERVICE_CAMERA permission).
+
+Page 3 of 15
+
+VisionGuard - Software Requirements Specification
+
+C3: Android 12+ blocks touch pass-through for overlays above 0.8 opacity, so the dim
+effect is capped at 0.8.
+C4: Blur-behind is device-dependent; a frosted/dark overlay is the fallback.
+C5: Android's native multi-user is not available to normal apps, so profiles are app-level.
+C6: Some OEM skins (Xiaomi, Oppo, Vivo, Samsung) may terminate background
+services.
+C7: AccessibilityService shall not be used (Play Store restrictions and larger attack
+surface).
+
+2.6 Assumptions and dependencies
+A1: Users grant required permissions.
+A2: ML Kit Face Detection (bundled model) is available offline.
+A3: Distance estimates are approximate (target error within about 15 percent after
+calibration).
+A4: A parent sets up child profiles; the child does not have the parent PIN.
+
+3. Specific requirements
+Priority key: M = must (prototype), S = should, C = could (roadmap). Requirement
+language: "shall" is mandatory.
+
+3.1 Functional requirements
+3.1.1 Eye Guard (F1)
+ID
+
+Requirement
+
+Priority
+
+FR-EG-1
+
+The system shall capture front-camera frames at
+low resolution (320x240 to 640x480) using
+CameraX ImageAnalysis with the keep-onlylatest strategy.
+
+M
+
+FR-EG-2
+
+The system shall detect the largest face per frame
+using an on-device model and compute its pixel
+width.
+
+M
+
+Page 4 of 15
+
+VisionGuard - Software Requirements Specification
+
+ID
+
+Requirement
+
+Priority
+
+FR-EG-3
+
+The system shall estimate viewing distance using
+the pinhole model, calibrated by a one-time user
+action ("hold phone at 30 cm and tap Calibrate").
+
+M
+
+FR-EG-4
+
+The system shall smooth estimates with an EMA
+and trigger only after N consecutive frames below
+the threshold (default N = 5) to avoid flicker.
+
+M
+
+FR-EG-5
+
+The default "too close" threshold shall be 30 cm,
+user-adjustable, with 5 cm hysteresis before the
+warning clears.
+
+M
+
+FR-EG-6
+
+On trigger, the system shall display a warning
+notification or banner and apply a dim overlay
+proportional to closeness, capped at 0.8 opacity.
+
+M
+
+FR-EG-7
+
+The dim shall be removed within 1 second after the
+distance returns above threshold plus hysteresis.
+
+M
+
+FR-EG-8
+
+The system shall stop analysing when the screen is
+off or the device is locked.
+
+M
+
+FR-EG-9
+
+The system should read camera focal length and
+sensor size from CameraCharacteristics for
+automatic calibration.
+
+S
+
+FR-EG-10
+
+The system could use iris or inter-pupillary
+landmarks for improved accuracy.
+
+C
+
+3.1.2 Privacy Guard (F2)
+ID
+
+Requirement
+
+Priority
+
+FR-PG-1
+
+The system shall detect multiple faces in a frame.
+
+M
+
+FR-PG-2
+
+A secondary viewer shall be recognised when a
+second face exceeds a minimum relative size
+(default 10 percent of frame width, tunable) and its
+head yaw indicates it faces the screen.
+
+M
+
+FR-PG-3
+
+The condition shall persist for N consecutive
+frames (default 3) before alerting.
+
+M
+
+Page 5 of 15
+
+VisionGuard - Software Requirements Specification
+
+ID
+
+Requirement
+
+Priority
+
+FR-PG-4
+
+On trigger, the system shall alert the user and
+apply a dark or frosted overlay (blur-behind where
+supported).
+
+M
+
+FR-PG-5
+
+The overlay shall clear automatically when the
+second face is absent for 2 seconds, or when the
+user taps a dismiss control.
+
+M
+
+FR-PG-6
+
+The user shall be able to enable or disable Privacy
+Guard per profile.
+
+M
+
+FR-PG-7
+
+The system could support a "trusted viewer" mode
+that suppresses alerts temporarily.
+
+C
+
+3.1.3 Overlay and display control
+ID
+
+Requirement
+
+Priority
+
+FR-OV-1
+
+The system shall draw overlays using
+TYPE_APPLICATION_OVERLAY with
+FLAG_NOT_TOUCHABLE so underlying apps remain
+usable.
+
+M
+
+FR-OV-2
+
+The system shall request the overlay permission
+with a clear explanation and a direct link to the
+settings screen.
+
+M
+
+FR-OV-3
+
+The system shall show a persistent foreground
+notification while monitoring is active, with a onetap pause action.
+
+M
+
+FR-OV-4
+
+The system could adjust real screen brightness via
+WRITE_SETTINGS as an alternative to overlay
+dimming.
+
+C
+
+Page 6 of 15
+
+VisionGuard - Software Requirements Specification
+
+3.1.4 Multi-User Profiles (F3)
+ID
+
+Requirement
+
+Priority
+
+FR-MU-1
+
+The system shall support at least two local profiles
+(e.g., Parent, Child), each with separate usage
+counters, limits and settings.
+
+M
+
+FR-MU-2
+
+Profile switching shall require a PIN; parent-only
+actions shall require PIN or biometric
+authentication.
+
+M
+
+FR-MU-3
+
+Usage shall be attributed to the active profile at
+the time it occurs.
+
+M
+
+FR-MU-4
+
+Child profiles shall not be able to change limits,
+disable protection or view other profiles.
+
+M
+
+FR-MU-5
+
+The system could identify the active user by face.
+This requires explicit opt-in, an encrypted
+embedding store and no export.
+
+C
+
+3.1.5 Smart Dashboard (F4)
+ID
+
+Requirement
+
+Priority
+
+FR-DB-1
+
+The system shall read per-app foreground time
+using UsageStatsManager ( queryEvents ) after
+the user grants usage access.
+
+M
+
+FR-DB-2
+
+The dashboard shall show today's total screen
+time, per-app breakdown, and counts of Eye Guard
+and Privacy Guard events, for the active profile.
+
+M
+
+FR-DB-3
+
+The system shall generate rule-based suggestions
+(e.g., after 40 continuous minutes in a feed app,
+suggest a walk, stretch or reading).
+
+M
+
+FR-DB-4
+
+The dashboard should show a 7-day trend.
+
+S
+
+Page 7 of 15
+
+VisionGuard - Software Requirements Specification
+
+3.1.6 Time Tokens (F5)
+ID
+
+Requirement
+
+Priority
+
+FR-TT-1
+
+The system shall implement the state machine
+
+M
+
+ACTIVE -> LIMIT_REACHED -> COOLDOWN ->
+TOKEN_WINDOW (5 min) -> LIMIT_REACHED .
+
+FR-TT-2
+
+When a per-app or per-category limit is reached,
+the system shall show a block screen rather than
+permanently disabling the app.
+
+M
+
+FR-TT-3
+
+After a configurable cooldown (default 15 minutes),
+the user shall be able to redeem one Time Token for
+a 5-minute window.
+
+M
+
+FR-TT-4
+
+The maximum tokens per day per profile shall be
+configurable by the parent (default 3).
+
+M
+
+FR-TT-5
+
+Timing logic shall use
+
+M
+
+SystemClock.elapsedRealtime() so changing the
+
+system clock does not bypass limits, and state shall
+persist across reboots.
+FR-TT-6
+
+Limit and token logic shall reside in a pure-Kotlin
+PolicyEngine with no Android dependencies.
+
+M
+
+FR-TT-7
+
+The block screen shall be shown via the overlay
+permission, because starting activities from the
+background is restricted.
+
+M
+
+3.2 External interface requirements
+Interface
+
+Requirement
+
+User interface
+
+Jetpack Compose, Material 3, light and dark
+themes, minimum touch target 48 dp, readable at
+1.0 and 1.3 font scale
+
+Hardware
+
+Front camera; optional accelerometer, light and
+proximity sensors for power gating
+
+Page 8 of 15
+
+VisionGuard - Software Requirements Specification
+
+Interface
+
+Requirement
+
+Software
+
+Android framework APIs listed in 2.5; ML Kit Face
+Detection (bundled) or MediaPipe Face
+Landmarker
+
+Communications
+
+None. The prototype shall not declare the
+INTERNET permission.
+
+3.3 Non-functional requirements
+Performance and efficiency
+NFR-P1: Per-frame detection latency shall be 100 ms or less on a mid-range device.
+NFR-P2: Eye Guard response (from crossing threshold to dim shown) shall be 1 second
+or less.
+NFR-P3: Adaptive frame rate: about 1 fps when idle, up to 5 fps near thresholds or
+when multiple faces are suspected.
+NFR-P4: Monitoring shall run only while the screen is on and unlocked.
+NFR-P5: Added battery drain should be measured and reported (target under 5
+percent per hour of active monitoring; to be validated, not yet measured).
+NFR-P6: App memory footprint should stay under 150 MB.
+Reliability
+NFR-R1: The service shall restart cleanly after crash, process death or reboot (with
+user consent for autostart).
+NFR-R2: If the camera is unavailable or in use by another app, the system shall degrade
+gracefully and inform the user.
+NFR-R3: The app shall guide users through OEM autostart and battery-optimisation
+exemptions.
+Usability
+NFR-U1: First-run setup (permissions plus calibration) shall take under 3 minutes.
+NFR-U2: Warnings shall be non-punitive and clearly explain why the screen dimmed.
+NFR-U3: The camera-active indicator and foreground notification shall never be hidden
+or suppressed.
+
+Page 9 of 15
+
+VisionGuard - Software Requirements Specification
+
+Compatibility and maintainability
+NFR-C1: Supported on Android 10 or higher; verified on at least two OEM skins.
+NFR-M1: Modular architecture ( core-vision , core-overlay , core-usage , corepolicy , core-data , feature-dashboard , feature-profiles ).
+
+NFR-M2: PolicyEngine unit-test coverage of 90 percent or more of branches.
+
+4. Data requirements
+Data
+
+Stored?
+
+Location
+
+Protection
+
+Camera frames /
+bitmaps
+
+Never
+
+Memory only, released
+immediately
+( ImageProxy.close() )
+
+Not logged, not
+written to disk
+
+Face embeddings
+
+Not in
+prototype
+
+n/a
+
+Roadmap:
+encrypted, opt-in,
+non-exportable
+
+Derived events
+(e.g., "too close,
+14:03")
+
+Yes
+
+Local database
+
+Encrypted at rest
+
+Usage statistics
+
+Derived
+summaries
+
+Local database
+
+Encrypted at rest
+
+Profiles, limits,
+token state
+
+Yes
+
+Local database
+
+Encrypted at rest;
+PIN stored as
+salted hash
+
+Calibration value
+
+Yes
+
+Local database
+
+Encrypted at rest
+
+Retention shall default to 30 days for events, configurable, with a one-tap "Wipe all data"
+action.
+
+5. Security and privacy requirements
+5.1 Privacy by architecture
+SEC-P1: The manifest shall not declare INTERNET or ACCESS_NETWORK_STATE ; "no
+cloud" is therefore verifiable, not a promise.
+
+Page 10 of 15
+
+VisionGuard - Software Requirements Specification
+
+SEC-P2: Frames shall be processed in memory only and never persisted, cached,
+logged or shared.
+SEC-P3: Only derived events shall be stored.
+SEC-P4: The app shall provide a "Privacy Ledger" screen listing exactly what is stored,
+plus a wipe control.
+SEC-P5: allowBackup shall be false and data-extraction rules shall exclude all app
+data.
+SEC-P6: Explicit consent shall be shown before enabling camera analysis, with parental
+consent flow for child profiles.
+
+5.2 Data protection and authentication
+SEC-D1: Database encryption with keys held in Android Keystore (StrongBox where
+available), using Room with SQLCipher or Tink. Deprecated
+androidx.security:security-crypto shall not be used.
+SEC-D2: PINs shall be hashed with PBKDF2 or Argon2 using a unique salt, with attempt
+rate-limiting and lockout back-off.
+SEC-D3: Parent actions shall support BiometricPrompt with a CryptoObject .
+SEC-D4: FLAG_SECURE shall be set on dashboard and settings screens to prevent
+screenshots and screen recording.
+
+5.3 Application hardening
+SEC-H1: All components shall be exported="false" unless required.
+SEC-H2: usesCleartextTraffic="false" and a restrictive network security config
+shall be set for future-proofing.
+SEC-H3: R8 minification enabled and release builds properly signed; debug flags off.
+SEC-H4: Dependencies shall be scanned (Dependabot or OWASP Dependency-Check)
+and an SBOM generated.
+SEC-H5: Settings shall be PIN-protected; Device Admin uninstall protection is a
+roadmap item.
+SEC-H6: Overlay and block screens shall protect against tapjacking by not relying on
+touch events from untrusted windows for sensitive actions.
+
+Page 11 of 15
+
+VisionGuard - Software Requirements Specification
+
+5.4 Threat model summary (STRIDE)
+Threat
+
+Example
+
+Mitigation
+
+Spoofing
+
+Child guesses the parent PIN
+
+Rate limiting, lockout, biometric
+option
+
+Tampering
+
+Child changes system clock to
+bypass limits
+
+Monotonic clock, persisted state
+
+Repudiation
+
+Disputed usage records
+
+Append-only local event log
+
+Information
+disclosure
+
+Extracting database or frames
+from the device
+
+Encryption, no frame persistence,
+no backup, FLAG_SECURE
+
+Denial of service
+
+Android or OEM kills the service
+
+FGS, exemption guidance, restart
+logic
+
+Elevation of
+privilege
+
+Malicious app invokes exported
+components
+
+No exported components,
+signature-level permissions
+
+5.5 Legal and compliance note
+Processing facial imagery and monitoring minors' usage may trigger consent obligations
+under the DPDP Act 2023 (India), COPPA and GDPR. Local-only processing reduces
+exposure but does not remove these obligations. Qualified legal review is required before
+any public release. This SRS is not legal advice.
+
+6. Verification and acceptance
+Requirement area
+
+Method
+
+Pass criterion
+
+SEC-P1 (no
+network)
+
+Manifest inspection; PCAPdroid
+or Wireshark capture via hotspot
+
+INTERNET absent; zero
+
+SEC-P2 (no frames
+stored)
+
+File-system inspection after run;
+code review
+
+No image files; no frame data in
+logs
+
+SEC-D1
+(encryption)
+
+Pull DB from device;
+Frida/objection inspection of own
+build
+
+Database unreadable without
+key
+
+outbound packets during a 10minute run
+
+Page 12 of 15
+
+VisionGuard - Software Requirements Specification
+
+Requirement area
+
+Method
+
+Pass criterion
+
+SEC-H1 (exports)
+
+MobSF / drozer scan
+
+No unintended exported
+components
+
+FR-EG-3 to 7
+
+Manual test at 20, 30, 40 and 60
+cm
+
+Warning and dim within 1 s at
+under 30 cm; clears when back
+
+FR-PG-2 to 5
+
+Manual test with a second person
+behind the user
+
+Alert after 3 frames; clears after
+2 s absence
+
+FR-TT-5
+
+Change system clock; reboot
+
+Limits not bypassed; state
+preserved
+
+FR-TT-1 to 4
+
+Unit tests on PolicyEngine
+
+All state transitions covered
+
+NFR-P5
+
+Perfetto / Battery Historian over 1
+hour
+
+Drain figure recorded
+
+NFR-C1
+
+Test on two OEM devices
+
+Service survives 30 minutes in
+background
+
+Standards checklist: OWASP MASVS v2 (L1 baseline plus L2 for storage and
+authentication), tested per MASTG.
+
+7. Risks, prototype scope and roadmap
+7.1 Key risks
+Risk
+
+Impact
+
+Mitigation
+
+Camera or overlay fails in
+background on some devices
+
+Core demo fails
+
+Day-one spike on a real device;
+backup screen recording
+
+Distance estimate inaccurate
+
+False warnings
+
+Per-user calibration, smoothing,
+hysteresis
+
+Battery drain from camera
+
+Poor adoption
+
+Adaptive fps, screen-on gating,
+sensor gating
+
+OEM background kills
+
+Protection silently
+stops
+
+Autostart guidance, service
+health indicator
+
+Page 13 of 15
+
+VisionGuard - Software Requirements Specification
+
+Risk
+
+Impact
+
+Mitigation
+
+Child bypasses or uninstalls app
+
+Limits ineffective
+
+PIN-protected settings; Device
+Admin (roadmap)
+
+Privacy or consent noncompliance
+
+Legal exposure
+
+Local-only design, consent flows,
+legal review
+
+7.2 Prototype scope (event build)
+Feature
+
+Status in prototype
+
+Eye Guard
+
+Implemented (calibrated distance, dim overlay,
+warning)
+
+Privacy Guard
+
+Implemented (multi-face detection, overlay)
+
+Smart Dashboard
+
+Implemented with real usage data and rule-based
+suggestions
+
+Multi-User Profiles
+
+Partial (PIN switch, two profiles, separate
+counters)
+
+Time Tokens
+
+Mocked UI of the state machine; PolicyEngine as
+time permits
+
+Encryption, Privacy Ledger, hardening
+
+Partial; remainder on roadmap
+
+7.3 Roadmap
+1. Full PolicyEngine and persistence for Time Tokens
+2. Keystore-backed database encryption and complete MASVS checklist
+3. Automatic calibration and iris-based distance
+4. Trusted-viewer mode for Privacy Guard
+5. Device Admin uninstall protection and OEM battery handling
+6. Optional local-first parent-to-child sync (Nearby Connections or mDNS with mutualauth TLS or Noise, end-to-end encrypted, no central server)
+7. Play Store declarations (camera FGS, overlay, usage access) and legal review
+
+Page 14 of 15
+
+VisionGuard - Software Requirements Specification
+
+Appendix A: Time Token state machine
+From
+
+Event
+
+To
+
+ACTIVE
+
+Daily limit reached
+
+LIMIT_REACHED
+
+LIMIT_REACHED
+
+Block screen shown, cooldown
+starts
+
+COOLDOWN
+
+COOLDOWN
+
+Cooldown elapsed and token
+available
+
+TOKEN_WINDOW (5
+min)
+
+TOKEN_WINDOW
+
+5 minutes elapsed
+
+LIMIT_REACHED
+
+LIMIT_REACHED /
+COOLDOWN
+
+Daily reset or parent override
+
+ACTIVE
+
+Appendix B: Open items
+Final threshold and N-frame values to be tuned on the test device.
+Calibration method and accuracy to be validated across at least 3 users.
+Battery benchmark results to be added after testing.
+Team names, roles and sign-off to be completed in the group format.
+
+Page 15 of 15
+
+
