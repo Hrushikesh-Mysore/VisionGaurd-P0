@@ -1,20 +1,34 @@
 # VisionGuard Status
 
 ## Current Phase
-**Pre-Phase 0: Environment Preflight & Project Initialization**
+**Phase 0: Risk Spike (Ready for On-Device Verification)**
 
 ## What is Completed
-- Ingested and verified specification from `docs/SRS.pdf` (`docs/SRS.txt`) and `docs/Agent.md`.
-- Extracted `AGENTS.md` to repository root per Master Prompt specification.
-- Initialized Git repository (`main` branch) and committed baseline setup (`18ea6c1`).
-- Established tracking documentation: `STATUS.md`, `CHANGELOG.md`, `CODE_TOUR.md`, `HANDOFF.md`.
-- Performed detailed environment toolchain check.
+- Scaffolding of Android project with Gradle 8.9 wrapper, AGP 8.5.2, Kotlin 2.0.20, and Compose.
+- Zero-cloud manifest enforcement: verified neither `INTERNET` nor `ACCESS_NETWORK_STATE` is present in the merged manifest (`app/build/intermediates/merged_manifest/debug/processDebugMainManifest/AndroidManifest.xml`).
+- Pure-Kotlin `SpikePolicy` with 100% JVM unit test coverage (`calculateWidthFraction`, `isTooClose`).
+- `SpikeOverlayManager` providing non-focusable, non-touchable overlay (`TYPE_APPLICATION_OVERLAY` at 0.5 alpha).
+- `CameraForegroundService` (`LifecycleService`, `foregroundServiceType="camera"`, persistent notification, `ACTION_SCREEN_OFF/ON` dynamic power-gating receiver, CameraX + ML Kit bundled face detection).
+- Compose UI (`MainActivity`) with Start/Stop button, permission checklist with direct setting links, live detection metrics HUD, and manual overlay toggle.
+- Debug APK assembled and successfully installed on physical device `ZF6526CJ97` (Motorola Moto E7 Plus, Android 10 / API 29).
+- Camera and Overlay permissions pre-granted via ADB.
+
+## Phase 0 Spike Verification Table
+
+| Spike Row | Target Behavior | Status | Verification Method |
+|---|---|---|---|
+| 1. Camera service in background | Runs in background with ongoing notification | UNVERIFIED | Tap "Start Protection", switch to home screen, verify notification remains active |
+| 2. Face detected with screen on | Face count and widthFraction update live | UNVERIFIED | Look at front camera; verify faces and widthFraction update in app and in logcat |
+| 3. Overlay appears over other apps | Dim overlay appears over other apps when too close | UNVERIFIED | Open Chrome while protection is active, bring phone close to face (<30 cm), verify screen dims |
+| 4. Overlay is click-through | Overlay allows full interaction with underlying app | UNVERIFIED | While dim overlay is active over Chrome, tap links and scroll; touches must pass through |
+| 5. Camera stops when screen off | Camera analysis unbinds on screen off and rebinds on screen on | UNVERIFIED | Lock screen; verify analysis unbinds; unlock screen; verify analysis rebinds (check logcat) |
+
+*Note: Per honesty rule, items requiring physical phone manipulation are marked UNVERIFIED until manually verified on device.*
 
 ## What is Currently Being Worked On
-- Environment toolchain readiness (resolving missing JDK, Android SDK, adb, and device connection).
+- Physical phone verification of Phase 0 spike table by user.
 
 ## What is Not Completed
-- Phase 0: Risk spike (camera foreground service, ML Kit face detection, overlay pass-through).
 - Phase 1: Eye Guard + Home screen.
 - Phase 2: Privacy Guard.
 - Phase 3: Smart Dashboard.
@@ -24,32 +38,27 @@
 - Phase 7: Polish and APK.
 - Phase 8: Event pack.
 
-## Environment Check Details
-1. **Java / JDK**: Not found (`which java` / `which javac` returned not found; `JAVA_HOME` unset; `/usr/lib/jvm` does not exist).
-2. **Android SDK**: Not found (`ANDROID_HOME` / `ANDROID_SDK_ROOT` unset; `~/Android/Sdk` and `/usr/lib/android-sdk` do not exist).
-3. **adb**: Not found (`which adb` returned not found).
-4. **Gradle / Wrapper**: Not found (`which gradle` not found; project `./gradlew` not yet scaffolded).
-5. **Connected Android Device**: None detected via USB (`lsusb` shows peripheral webcam and mouse; no phone detected).
-
 ## Known Bugs / Problems / Blockers
-- **Build Environment Missing**: Missing JDK (17 or 21), Android SDK (commandline-tools / platforms / build-tools), and `adb`.
-- **Target Device**: No Android device with USB debugging currently connected.
+- Device screen is currently locked with a PIN; user must unlock phone to interact with `MainActivity`.
 
 ## Tests Performed and Results
-- Toolchain environment probes executed (all reported above).
+- Unit tests (`./gradlew test`): **PASS** (SpikePolicyTest: 3/3 passed).
+- Manifest check (`./gradlew :app:processDebugMainManifest`): **PASS** (Zero network permissions).
+- APK Build (`./gradlew assembleDebug`): **PASS** (`app-debug.apk` generated, size 63MB with bundled ML Kit model).
+- APK Deployment (`adb install -r`): **PASS** (Installed to `ZF6526CJ97`).
 
 ## Build Status
-- Not built yet (waiting for toolchains to scaffold the project).
+- **SUCCESS** (`./gradlew assembleDebug` and `./gradlew test` exit 0).
 
 ## APK / Device Testing Status
-- Not deployed yet.
+- Installed on device `ZF6526CJ97`. Awaiting user live confirmation of spike table rows.
 
 ## Exact Next Recommended Action
-- User to run manual setup commands to install JDK 17 (or 21), `adb`, Android SDK / Studio, and connect an Android device with USB debugging enabled.
-- Verify environment with `java -version`, `adb devices`, and `echo $ANDROID_HOME`.
-- Then instruct agent to scaffold the project and start Phase 0.
+- User to unlock phone and execute the 5-step test script.
+- Mark spike table rows as PASS/FAIL based on real device behavior.
+- Tag `phase-0` and await user instruction (`next`) before starting Phase 1.
 
 ## Important Decisions Made
-- Architecture strictly adheres to zero-network manifest constraint (`INTERNET` and `ACCESS_NETWORK_STATE` prohibited).
-- No Hilt or complex DI; simple `AppContainer` pattern will be used.
-- Single `:app` module layout (`vision`, `overlay`, `usage`, `data`, `policy`, `ui`).
+- Bundled ML Kit face detection (`com.google.mlkit:face-detection:16.1.7`) used instead of unbundled Play Services to ensure 100% offline functionality.
+- Deprecated `LocalLifecycleOwner` replaced with `androidx.lifecycle.compose.LocalLifecycleOwner`.
+- Overlay alpha set to 0.5 (safe touch pass-through margin well below Android 12+ limit of 0.8).

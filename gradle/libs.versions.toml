@@ -1,0 +1,53 @@
+[versions]
+agp = "8.5.2"
+kotlin = "2.0.20"
+coreKtx = "1.13.1"
+lifecycle = "2.8.6"
+activityCompose = "1.9.2"
+composeBom = "2024.09.02"
+camera = "1.3.4"
+mlkitFaceDetection = "16.1.7"
+coroutines = "1.8.1"
+junit = "4.13.2"
+
+[libraries]
+# AndroidX Core extensions for Kotlin idiomatic language support
+androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+# Lifecycle runtime extensions for Coroutine lifecycle scopes
+androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycle" }
+# Lifecycle-aware Service base class required for Camera foreground service
+androidx-lifecycle-service = { group = "androidx.lifecycle", name = "lifecycle-service", version.ref = "lifecycle" }
+# Compose lifecycle integration to safely observe StateFlow
+androidx-lifecycle-runtime-compose = { group = "androidx.lifecycle", name = "lifecycle-runtime-compose", version.ref = "lifecycle" }
+# Integration of Jetpack Compose with Android ComponentActivity
+androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
+# Bill of materials to ensure binary-compatible Compose versions
+androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
+# Compose core UI primitives, modifier hierarchy, and layout system
+androidx-compose-ui = { group = "androidx.compose.ui", name = "ui" }
+# Compose graphics foundation for canvas, color filters, and shapes
+androidx-compose-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }
+# Compose preview tooling support for rapid UI development
+androidx-compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
+# Compose Material 3 components and design tokens
+androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3" }
+# CameraX core abstraction for camera management and configuration
+androidx-camera-core = { group = "androidx.camera", name = "camera-core", version.ref = "camera" }
+# CameraX Camera2 backend implementation for Android hardware camera access
+androidx-camera-camera2 = { group = "androidx.camera", name = "camera-camera2", version.ref = "camera" }
+# CameraX lifecycle binding to tie camera capture to service/activity lifecycle
+androidx-camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "camera" }
+# Bundled offline ML Kit face detector that runs entirely on-device without internet or Google Play services
+mlkit-face-detection = { group = "com.google.mlkit", name = "face-detection", version.ref = "mlkitFaceDetection" }
+# Kotlin coroutines Android dispatchers for main thread and background tasks
+kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
+# Standard JUnit testing framework for unit tests
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+
+[plugins]
+# Android application build plugin
+android-application = { id = "com.android.application", version.ref = "agp" }
+# Kotlin Android language support plugin
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+# Kotlin Compose compiler plugin bundled with Kotlin 2.0+
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
