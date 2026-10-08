@@ -1,4 +1,4 @@
-// Smart Dashboard Jetpack Compose screen.
+// Smart Dashboard Jetpack Compose screen with profile-aware usage attribution and PIN security.
 // Displays hero screen time, circular progress, 7-day trend, top apps, protection stats, and rule-based suggestions.
 package com.visionguard.ui
 
@@ -11,13 +11,13 @@ import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.provider.Settings
 import android.view.WindowManager
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -30,11 +30,14 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.visionguard.VisionGuardApp
 import com.visionguard.policy.DashboardMetrics
+import com.visionguard.policy.PinVerificationResult
+import com.visionguard.policy.UserProfile
 import com.visionguard.usage.AppUsageItem
 import com.visionguard.usage.DailyUsageItem
 import com.visionguard.usage.UsageAggregationResult
@@ -50,6 +53,7 @@ fun SmartDashboardScreen() {
     val container = VisionGuardApp.instance.container
     val coroutineScope = rememberCoroutineScope()
 
+    val activeProfile by container.activeProfile.collectAsState()
     val dailyGoalHours by container.dailyGoalHours.collectAsState()
     val isSecureModeEnabled by container.isSecureModeEnabled.collectAsState()
 
@@ -57,20 +61,22 @@ fun SmartDashboardScreen() {
     val eyeGuardCount by container.eventDao.getCountSince("TOO_CLOSE", startOfToday).collectAsState(initial = 0)
     val privacyGuardCount by container.eventDao.getCountSince("PRIVACY_ALERT", startOfToday).collectAsState(initial = 0)
 
-    var usageResult by remember {
-        mutableStateOf<UsageAggregationResult?>(null)
-    }
+    var usageResult by remember { mutableStateOf<UsageAggregationResult?>(null) }
     var isLoading by remember { mutableStateOf(true) }
+    var showProfileDialog by remember { mutableStateOf(false) }
 
     fun refreshUsage() {
         coroutineScope.launch {
             isLoading = true
-            usageResult = container.usageRepository.getUsageData()
+            usageResult = container.usageRepository.getUsageData(
+                targetProfile = activeProfile,
+                switchRecords = container.profileSwitchRecords
+            )
             isLoading = false
         }
     }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(activeProfile) {
         refreshUsage()
     }
 
@@ -96,7 +102,7 @@ fun SmartDashboardScreen() {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // 1. Top Header: Date and Profile Chip Placeholder
+        // 1. Top Header: Date and Profile Chip
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -116,10 +122,38 @@ fun SmartDashboardScreen() {
             }
 
             AssistChip(
-                onClick = { /* Profile management in Phase 4 */ },
-                label = { Text("Profile: Default", fontSize = 12.sp) },
-                shape = RoundedCornerShape(16.dp)
+                onClick = { showProfileDialog = true },
+                label = {
+                    Text(
+                        text = if (activeProfile == UserProfile.CHILD) "👶 Child (Protected)" else "👤 Parent",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                },
+                shape = RoundedCornerShape(16.dp),
+                colors = AssistChipDefaults.assistChipColors(
+                    containerColor = if (activeProfile == UserProfile.CHILD) MaterialTheme.colorScheme.tertiaryContainer else MaterialTheme.colorScheme.secondaryContainer
+                )
             )
+        }
+
+        // Child Profile Notice
+        if (activeProfile == UserProfile.CHILD) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("🛡️", fontSize = 20.sp)
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = "Child Profile active. Usage is attributed to Child. Settings and limits are locked by Parent PIN.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                }
+            }
         }
 
         // Empty state / Permission request card if Usage Access is not granted
@@ -127,7 +161,7 @@ fun SmartDashboardScreen() {
         if (!hasPermission && !isLoading) {
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
                 shape = RoundedCornerShape(16.dp)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
@@ -135,13 +169,13 @@ fun SmartDashboardScreen() {
                         text = "📊 Usage Access Permission Required",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                        color = MaterialTheme.colorScheme.onErrorContainer
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
                         text = "VisionGuard calculates screen time entirely on-device using local Android statistics. Grant usage access to view today's total, top apps, and digital wellbeing recommendations.",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                        color = MaterialTheme.colorScheme.onErrorContainer
                     )
                     Spacer(modifier = Modifier.height(12.dp))
                     Button(
@@ -175,7 +209,7 @@ fun SmartDashboardScreen() {
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Today's Screen Time",
+                        text = if (activeProfile == UserProfile.CHILD) "Child Screen Time Today" else "Today's Screen Time",
                         style = MaterialTheme.typography.titleSmall,
                         color = MaterialTheme.colorScheme.onPrimaryContainer
                     )
@@ -229,19 +263,28 @@ fun SmartDashboardScreen() {
             }
         }
 
-        // Daily Goal Selector Chips
+        // Daily Goal Selector Chips (Locked if Child)
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text("Goal:", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
-            listOf(2f, 3f, 4f, 6f).forEach { hours ->
+            if (activeProfile == UserProfile.CHILD) {
                 FilterChip(
-                    selected = dailyGoalHours == hours,
-                    onClick = { container.setDailyGoalHours(hours) },
-                    label = { Text("%.0fh%s".format(hours, if (hours == 4f) " (Default)" else "")) }
+                    selected = true,
+                    onClick = { /* Locked for child */ },
+                    label = { Text("%.0fh (Parent Lock)".format(dailyGoalHours)) },
+                    enabled = false
                 )
+            } else {
+                listOf(2f, 3f, 4f, 6f).forEach { hours ->
+                    FilterChip(
+                        selected = dailyGoalHours == hours,
+                        onClick = { container.setDailyGoalHours(hours) },
+                        label = { Text("%.0fh%s".format(hours, if (hours == 4f) " (Default)" else "")) }
+                    )
+                }
             }
         }
 
@@ -410,13 +453,148 @@ fun SmartDashboardScreen() {
                 }
                 Switch(
                     checked = isSecureModeEnabled,
-                    onCheckedChange = { container.setSecureModeEnabled(it) }
+                    onCheckedChange = { container.setSecureModeEnabled(it) },
+                    enabled = activeProfile == UserProfile.PARENT // Locked for child
                 )
             }
         }
 
         Spacer(modifier = Modifier.height(24.dp))
     }
+
+    // Profile Switch & PIN Authentication Dialog
+    if (showProfileDialog) {
+        ProfileSwitchModal(
+            currentProfile = activeProfile,
+            onDismiss = { showProfileDialog = false },
+            onSwitch = { targetProfile, pin -> container.switchProfile(targetProfile, pin) },
+            onSwitchComplete = { showProfileDialog = false }
+        )
+    }
+}
+
+@Composable
+fun ProfileSwitchModal(
+    currentProfile: UserProfile,
+    onDismiss: () -> Unit,
+    onSwitch: (UserProfile, String) -> PinVerificationResult,
+    onSwitchComplete: () -> Unit
+) {
+    val container = VisionGuardApp.instance.container
+    var enteredPin by remember { mutableStateOf("") }
+    var pinError by remember { mutableStateOf<String?>(null) }
+    var isSettingPin by remember { mutableStateOf(!container.isParentPinSet()) }
+    var confirmPin by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = if (isSettingPin) "Set Parent PIN" else "Profile Management",
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = "Current Active Profile: ${currentProfile.name}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+
+                Text(
+                    text = "Application-level profile separation. (Note: Android OS does not provide true multi-user separation to third-party apps).",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                if (isSettingPin) {
+                    Text(
+                        text = "Set a 4-digit Parent PIN to secure settings and profile switching (stored via PBKDF2-HMAC-SHA256 with 100,000 iterations).",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    OutlinedTextField(
+                        value = enteredPin,
+                        onValueChange = { if (it.length <= 4 && it.all(Char::isDigit)) enteredPin = it },
+                        label = { Text("4-Digit PIN") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = confirmPin,
+                        onValueChange = { if (it.length <= 4 && it.all(Char::isDigit)) confirmPin = it },
+                        label = { Text("Confirm 4-Digit PIN") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                } else {
+                    Text(
+                        text = if (currentProfile == UserProfile.CHILD) {
+                            "Enter Parent PIN to switch to Parent profile:"
+                        } else {
+                            "Enter Parent PIN to confirm switching to Child profile:"
+                        },
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    OutlinedTextField(
+                        value = enteredPin,
+                        onValueChange = { if (it.length <= 4 && it.all(Char::isDigit)) enteredPin = it },
+                        label = { Text("Parent PIN") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                pinError?.let {
+                    Text(text = it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (isSettingPin) {
+                        if (enteredPin.length != 4 || !enteredPin.all(Char::isDigit)) {
+                            pinError = "PIN must be exactly 4 digits."
+                        } else if (enteredPin != confirmPin) {
+                            pinError = "PINs do not match."
+                        } else {
+                            container.setParentPin(enteredPin)
+                            isSettingPin = false
+                            pinError = null
+                        }
+                    } else {
+                        val target = if (currentProfile == UserProfile.CHILD) UserProfile.PARENT else UserProfile.CHILD
+                        when (val result = onSwitch(target, enteredPin)) {
+                            is PinVerificationResult.Success -> onSwitchComplete()
+                            is PinVerificationResult.LockedOut -> pinError = "Locked out. Try again in ${result.remainingSeconds}s."
+                            is PinVerificationResult.Failed -> pinError = if (result.isLockedOut) {
+                                "Too many failed attempts. Locked out for ${result.lockoutDurationSeconds}s."
+                            } else {
+                                "Incorrect PIN. ${result.attemptsRemaining} attempts left."
+                            }
+                            is PinVerificationResult.PinNotConfigured -> pinError = "Set a Parent PIN before switching profiles."
+                        }
+                    }
+                }
+            ) {
+                Text(
+                    text = when {
+                        isSettingPin -> "Save PIN"
+                        else -> "Authenticate & Switch"
+                    }
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
 }
 
 @Composable
@@ -441,7 +619,6 @@ fun WeeklyTrendChart(trend: List<DailyUsageItem>, goalMs: Long) {
                 verticalArrangement = Arrangement.Bottom,
                 modifier = Modifier.weight(1f)
             ) {
-                // Duration label
                 val hours = item.totalTimeMs.toFloat() / (3600 * 1000f)
                 val durationText = if (item.totalTimeMs > 0) "%.1fh".format(hours) else "0h"
                 Text(
@@ -453,7 +630,6 @@ fun WeeklyTrendChart(trend: List<DailyUsageItem>, goalMs: Long) {
 
                 Spacer(modifier = Modifier.height(4.dp))
 
-                // Bar
                 Box(
                     modifier = Modifier
                         .width(22.dp)
@@ -464,7 +640,6 @@ fun WeeklyTrendChart(trend: List<DailyUsageItem>, goalMs: Long) {
 
                 Spacer(modifier = Modifier.height(6.dp))
 
-                // Day of week label
                 Text(
                     text = item.dayLabel,
                     fontSize = 11.sp,
@@ -484,7 +659,6 @@ fun AppUsageRow(item: AppUsageItem) {
             .padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // App icon
         val bitmap = remember(item.packageName) {
             item.appIcon?.toBitmapSafe()
         }

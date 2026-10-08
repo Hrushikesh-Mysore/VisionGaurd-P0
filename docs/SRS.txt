@@ -32,6 +32,7 @@ Foreground Service (Android)
 
 Overlay
 
+
 Window drawn above other apps via
 TYPE_APPLICATION_OVERLAY
 
